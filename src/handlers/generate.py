@@ -12,9 +12,14 @@ from src.keyboards.gen import (
     cancel_keyboard,
     main_menu,
 )
-from src.services.image_gen import generate_from_text, generate_from_images
+from src.services.image_gen import (
+    generate_from_text,
+    generate_from_images,
+    NSFWContentError,
+)
 from src.services.quota import check_quota
 from src.states.generate import GenerateForm
+
 
 router = Router()
 
@@ -97,6 +102,10 @@ async def receive_prompt(message: Message, state: FSMContext):
             photo=BufferedInputFile(image_bytes, filename="result.png"),
             caption=f"🎨 <b>Промпт:</b> {html.escape(prompt)}",
             reply_markup=main_menu(),
+        )
+    except NSFWContentError:
+        await wait_msg.edit_text(
+            "🚫 Запрос отклонён фильтром безопасности. Попробуй переформулировать промпт.",
         )
     except Exception as e:
         logger.error(f"Text generation error: {e}")
@@ -218,6 +227,10 @@ async def receive_image_prompt(message: Message, state: FSMContext, bot: Bot):
             photo=BufferedInputFile(image_bytes, filename="result.png"),
             caption=f"🎨 <b>Промпт:</b> {html.escape(prompt)}",
             reply_markup=main_menu(),
+        )
+    except NSFWContentError:
+        await wait_msg.edit_text(
+            "🚫 Запрос отклонён фильтром безопасности. Попробуй переформулировать промпт или сменить фото.",
         )
     except Exception as e:
         logger.error(f"Image generation error: {e}")

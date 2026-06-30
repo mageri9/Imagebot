@@ -189,11 +189,23 @@ async def generate_from_text(user_id: int, prompt: str) -> bytes:
             ) from e
 
         except Exception as e:
+            if _is_nsfw_error(e):
+                logger.info(
+                    f"[{prov_name}] NSFW/moderation rejection for user_id={user_id}"
+                )
+
+                await release_quota(user_id)
+
+                raise NSFWContentError("Запрос отклонён фильтром модерации.") from e
+
             # Обычные сетевые или авторизационные ошибки (деньги не списаны) — делаем fallback
+
             logger.warning(
                 f"Provider '{prov_name}' failed with model '{target_model}': {e}. Trying fallback..."
             )
+
             last_error = e
+
             await log_generation(
                 user_id,
                 mode="text",
@@ -271,10 +283,21 @@ async def generate_from_images(
                 ) from e
 
             except Exception as e:
+                if _is_nsfw_error(e):
+                    logger.info(
+                        f"[{prov_name}] NSFW/moderation rejection for user_id={user_id}"
+                    )
+
+                    await release_quota(user_id)
+
+                    raise NSFWContentError("Запрос отклонён фильтром модерации.") from e
+
                 logger.warning(
                     f"Provider '{prov_name}' failed with model '{target_model}': {e}. Trying fallback..."
                 )
+
                 last_error = e
+
                 await log_generation(
                     user_id,
                     mode=mode,
@@ -305,6 +328,21 @@ RETRYABLE_EXCEPTIONS = (
 MAX_RETRIES_PER_PROVIDER = 2
 RETRY_BACKOFF_BASE = 1.5  # seconds
 
+class NSFWContentError(RuntimeError):
+    """Провайдер отклонил запрос как содержащий запрещённый/explicit контент."""
+    pass
+
+NSFW_ERROR_MARKERS = (
+    "moderation_blocked",        # AITunnel/OpenAI — точный код
+    "content_policy_violation",  # альтернативный код OpenAI
+    "safety system",             # текст сообщения OpenAI
+    "image_generation_user_error",  # type из OpenAI error object
+)
+
+
+def _is_nsfw_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in NSFW_ERROR_MARKERS)
 
 def _is_retryable(exc: Exception) -> bool:
     if isinstance(exc, RETRYABLE_EXCEPTIONS):
