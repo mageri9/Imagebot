@@ -96,25 +96,48 @@ class GenAPIProvider:
 
     @staticmethod
     async def _download_result(client: httpx.AsyncClient, result: dict) -> bytes:
-        """Extract image bytes from completed result."""
-        # Try b64 first (some models return inline)
-        b64 = (
-            result.get("b64_json")
-            or result.get("image")
-            or (result.get("output") or [None])[0]
-        )
-        if b64 and not b64.startswith("http"):
-            return base64.b64decode(b64)
+        """Extract image bytes from completed result safely."""
+        logger.debug(f"[genapi] parsing result structure: {result}")
 
-        # Otherwise fetch from URL
-        url = (
-            b64  # it's actually a URL
-            or result.get("url")
-            or (result.get("images") or [None])[0]
-        )
-        if not url:
-            raise RuntimeError(f"Gen-API result has no image data: {result}")
+        # 1. Безопасное извлечение строкового значения (URL или Base64) из различных полей
+        raw_data = None
 
+        if result.get("b64_json"):
+            raw_data = result.get("b64_json")
+        elif result.get("image"):
+            raw_data = result.get("image")
+        elif result.get("url"):
+            raw_data = result.get("url")
+        elif "output" in result:
+            output = result["output"]
+            if isinstance(output, list) and len(output) > 0:
+                raw_data = output[0]
+            elif isinstance(output, str):
+                raw_data = output
+        elif "images" in result:
+            images = result["images"]
+            if isinstance(images, list) and len(images) > 0:
+                raw_data = images[0]
+            elif isinstance(images, str):
+                raw_data = images
+
+        if not raw_data:
+            raise RuntimeError(
+                f"Gen-API result has no recognizable image data: {result}"
+            )
+
+        # 2. Если это base64-строка (не начинается с http)
+        if isinstance(raw_data, str) and not raw_data.startswith("http"):
+            try:
+                # Если строка содержит Data URI заголовок, убираем его
+                if "," in raw_data:
+                    raw_data = raw_data.split(",", 1)[1]
+                return base64.b64decode(raw_data)
+            except Exception as e:
+                raise RuntimeError(f"Failed to decode base64 from Gen-API: {e}")
+
+        # 3. Если это URL — скачиваем картинку по сети
+        url = raw_data
         logger.debug(f"[genapi] downloading result from {url}")
         resp = await client.get(url)
         resp.raise_for_status()
