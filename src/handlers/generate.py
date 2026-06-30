@@ -6,7 +6,12 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from loguru import logger
 
 from src.core.config import get_settings
-from src.keyboards.gen import mode_keyboard, multi_image_keyboard, cancel_keyboard, main_menu
+from src.keyboards.gen import (
+    mode_keyboard,
+    multi_image_keyboard,
+    cancel_keyboard,
+    main_menu,
+)
 from src.services.image_gen import generate_from_text, generate_from_images
 from src.services.quota import check_quota
 from src.states.generate import GenerateForm
@@ -20,10 +25,13 @@ def _max_multi() -> int:
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
+
 async def cmd_generate(message: Message, state: FSMContext):
     allowed, used, limit = await check_quota(message.from_user.id)
     if not allowed:
-        await message.answer(f"⚠️ Лимит на сегодня исчерпан ({used}/{limit}).\nПриходи завтра!")
+        await message.answer(
+            f"⚠️ Лимит на сегодня исчерпан ({used}/{limit}).\nПриходи завтра!"
+        )
         return
 
     await state.set_state(GenerateForm.choosing_mode)
@@ -34,6 +42,7 @@ async def cmd_generate(message: Message, state: FSMContext):
 
 
 # ── Mode selection ────────────────────────────────────────────────────────────
+
 
 async def cb_mode_text(query: CallbackQuery, state: FSMContext):
     await query.answer()
@@ -48,10 +57,11 @@ async def cb_mode_image(query: CallbackQuery, state: FSMContext):
     await query.answer()
     await state.update_data(images=[], mode="image")
     await state.set_state(GenerateForm.waiting_image)
-    await query.message.edit_text(
+    sent_msg = await query.message.edit_text(
         "🖼 Отправь фото для редактирования:",
         reply_markup=cancel_keyboard(),
     )
+    await state.update_data(last_msg_id=sent_msg.message_id)
 
 
 async def cb_mode_multi(query: CallbackQuery, state: FSMContext):
@@ -62,15 +72,15 @@ async def cb_mode_multi(query: CallbackQuery, state: FSMContext):
     sent_msg = await query.message.edit_text(
         f"🖼🖼 Отправляй фото по одному (до {max_multi} штук).\n"
         f"Когда загрузишь все — нажми «Готово».\n\n"
-        f"⚠️ <b>ВАЖНО:</b> Отправляйте фото строго ПО ОДНОМУ (не альбомом)! "
+        f"⚠️ <b>ВАЖНО:</b> Отправляйте фото строго ПО ОДНОМУ (не альбомом), делая паузу в 1-2 секунды! "
         f"Если отправить их альбомом, часть картинок может потеряться.",
         reply_markup=cancel_keyboard(),
     )
-    # Сохраняем ID сообщения, чтобы потом его удалить/обновить
     await state.update_data(last_msg_id=sent_msg.message_id)
 
 
 # ── Text prompt → generate ────────────────────────────────────────────────────
+
 
 async def receive_prompt(message: Message, state: FSMContext):
     prompt = message.text.strip()
@@ -90,32 +100,33 @@ async def receive_prompt(message: Message, state: FSMContext):
         )
     except Exception as e:
         logger.error(f"Text generation error: {e}")
-        await wait_msg.edit_text(f"❌ Ошибка генерации: <code>{html.escape(str(e))}</code>")
+        await wait_msg.edit_text(
+            f"❌ Ошибка генерации: <code>{html.escape(str(e))}</code>"
+        )
 
 
 # ── Image upload ──────────────────────────────────────────────────────────────
+
 
 async def receive_image(message: Message, state: FSMContext, bot: Bot):
     if not message.photo:
         await message.answer("Нужно отправить фото, не файл.")
         return
 
-    # Сначала пытаемся удалить прошлое сообщение бота с кнопками
+    # Удаляем предыдущее статус-сообщение бота с кнопками "Отмена"
     data = await state.get_data()
     last_msg_id = data.get("last_msg_id")
     if last_msg_id:
         try:
             await bot.delete_message(chat_id=message.chat.id, message_id=last_msg_id)
         except Exception:
-            pass  # Игнорируем, если сообщение уже удалено
+            pass
 
+    # Сохраняем исключительно строковый file_id (безопасно для Redis JSON)
     file_id = message.photo[-1].file_id
-    file = await bot.get_file(file_id)
-    buf = await bot.download_file(file.file_path)
-    image_bytes = buf.read()
 
-    images: list[bytes] = data.get("images", [])
-    images.append(image_bytes)
+    images: list[str] = data.get("images", [])
+    images.append(file_id)
 
     mode = data.get("mode", "image")
     max_multi = _max_multi()
@@ -166,15 +177,26 @@ async def cb_done_collecting(query: CallbackQuery, state: FSMContext):
 
 # ── Image prompt → generate ───────────────────────────────────────────────────
 
+
 async def receive_image_prompt(message: Message, state: FSMContext, bot: Bot):
     prompt = message.text.strip()
     data = await state.get_data()
+
+    # Удаляем Inline-сообщение с кнопкой отмены
+    last_msg_id = data.get("last_msg_id")
+    if last_msg_id:
+        try:
+            await bot.delete_message(chat_id=message.chat.id, message_id=last_msg_id)
+        except Exception:
+            pass
+
+    # Извлекаем сохраненные file_id
     image_ids: list[str] = data.get("images", [])
     await state.clear()
 
     wait_msg = await message.answer("⏳ Генерирую, подожди...")
     try:
-        # Скачиваем бинарные данные всех картинок из Telegram перед отправкой ИИ
+        # Скачиваем бинарные данные из Telegram непосредственно перед запросом в ИИ
         images_bytes = []
         for file_id in image_ids:
             file = await bot.get_file(file_id)
@@ -194,10 +216,13 @@ async def receive_image_prompt(message: Message, state: FSMContext, bot: Bot):
         )
     except Exception as e:
         logger.error(f"Image generation error: {e}")
-        await wait_msg.edit_text(f"❌ Ошибка генерации: <code>{html.escape(str(e))}</code>")
+        await wait_msg.edit_text(
+            f"❌ Ошибка генерации: <code>{html.escape(str(e))}</code>"
+        )
 
 
 # ── Cancel ────────────────────────────────────────────────────────────────────
+
 
 async def cb_cancel(query: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -212,19 +237,32 @@ async def cmd_cancel(message: Message, state: FSMContext):
 
 # ── Register ──────────────────────────────────────────────────────────────────
 
+
 def register_handlers():
     router.message.register(cmd_generate, Command("generate", "gen", "g"))
     router.message.register(cmd_generate, F.text == "🎨 Сгенерировать")
     router.message.register(cmd_cancel, Command("cancel"), GenerateForm())
 
-    router.callback_query.register(cb_mode_text, F.data == "mode:text", GenerateForm.choosing_mode)
-    router.callback_query.register(cb_mode_image, F.data == "mode:image", GenerateForm.choosing_mode)
-    router.callback_query.register(cb_mode_multi, F.data == "mode:multi", GenerateForm.choosing_mode)
+    router.callback_query.register(
+        cb_mode_text, F.data == "mode:text", GenerateForm.choosing_mode
+    )
+    router.callback_query.register(
+        cb_mode_image, F.data == "mode:image", GenerateForm.choosing_mode
+    )
+    router.callback_query.register(
+        cb_mode_multi, F.data == "mode:multi", GenerateForm.choosing_mode
+    )
 
     router.message.register(receive_prompt, GenerateForm.waiting_prompt, F.text)
     router.message.register(receive_image, GenerateForm.waiting_image, F.photo)
-    router.message.register(receive_more_image, GenerateForm.waiting_more_images, F.photo)
-    router.message.register(receive_image_prompt, GenerateForm.waiting_image_prompt, F.text)
+    router.message.register(
+        receive_more_image, GenerateForm.waiting_more_images, F.photo
+    )
+    router.message.register(
+        receive_image_prompt, GenerateForm.waiting_image_prompt, F.text
+    )
 
-    router.callback_query.register(cb_done_collecting, F.data == "gen:done", GenerateForm.waiting_more_images)
+    router.callback_query.register(
+        cb_done_collecting, F.data == "gen:done", GenerateForm.waiting_more_images
+    )
     router.callback_query.register(cb_cancel, F.data == "gen:cancel", GenerateForm())
