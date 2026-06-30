@@ -1,7 +1,7 @@
 import io
-import base64
 from PIL import Image
 from openai import AsyncOpenAI
+import httpx
 from loguru import logger
 
 
@@ -11,7 +11,6 @@ def _to_png(image_bytes: bytes) -> bytes:
     Required by OpenAI images/edits endpoint to act as a mask.
     """
     with Image.open(io.BytesIO(image_bytes)) as img:
-        # Принудительно используем RGBA, чтобы сохранить прозрачные пиксели
         if img.mode != "RGBA":
             img = img.convert("RGBA")
 
@@ -23,19 +22,10 @@ def _to_png(image_bytes: bytes) -> bytes:
 class OpenAICompatProvider:
     """
     Works with any OpenAI-compatible aggregator:
-      - ProxyAPI  (https://api.proxyapi.ru/openai/v1)
+      - ProxyAPI (https://api.proxyapi.ru/openai/v1)
       - OpenRouter
       - Direct OpenAI
-
-    No default values for size/quality — always supplied by caller
-    so the source of truth stays in DB/config, not here.
-
-    Multi-image edit note:
-      Most OpenAI-compatible providers (including ProxyAPI) support only a
-      single image in images/edits. When multiple images are provided we
-      composite them into one canvas before sending, which is safe and gives
-      the model full context. If your specific provider supports native
-      multi-image, override _prepare_edit_image() in a subclass.
+      - AITunnel (https://api.aitunnel.ru/v1)
     """
 
     def __init__(self, api_key: str, base_url: str):
@@ -52,7 +42,6 @@ class OpenAICompatProvider:
         pil_images = []
         for raw in images:
             with Image.open(io.BytesIO(raw)) as img:
-                # Сохраняем режим RGBA для каждого исходного фото
                 pil_images.append(img.convert("RGBA").copy())
 
         min_h = min(img.height for img in pil_images)
@@ -63,11 +52,9 @@ class OpenAICompatProvider:
 
         total_w = sum(img.width for img in resized)
 
-        # Создаем пустой абсолютно прозрачный холст (RGBA с прозрачностью 0)
         canvas = Image.new("RGBA", (total_w, min_h), (0, 0, 0, 0))
         x = 0
         for img in resized:
-            # Накладываем изображение, используя его же альфа-канал в качестве маски
             canvas.paste(img, (x, 0), img)
             x += img.width
 
@@ -84,16 +71,28 @@ class OpenAICompatProvider:
         size: str,
         quality: str,
     ) -> bytes:
-        logger.debug(f"[openai_compat] generate model={model} size={size} quality={quality}")
+        logger.debug(
+            f"[openai_compat] generate model={model} size={size} quality={quality}"
+        )
+
+        # Не передаем response_format="b64_json", так как AITunnel его не поддерживает
         response = await self._client.images.generate(
             model=model,
             prompt=prompt,
             size=size,
             quality=quality,
-            response_format="b64_json",
             n=1,
         )
-        return base64.b64decode(response.data[0].b64_json)
+
+        # Извлекаем прямую ссылку на сгенерированный результат
+        url = response.data[0].url
+        logger.info(f"[openai_compat] resolved generate url: {url}")
+
+        # Скачиваем бинарные данные картинки по сети
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.content
 
     async def edit(
         self,
@@ -114,7 +113,7 @@ class OpenAICompatProvider:
 
         image_file = ("image.png", io.BytesIO(png), "image/png")
 
-        # Не передаем response_format, так как AITunnel не поддерживает его в edits
+        # Не передаем response_format, так как AITunnel его не поддерживает
         response = await self._client.images.edit(
             model=model,
             image=image_file,
@@ -123,12 +122,11 @@ class OpenAICompatProvider:
             n=1,
         )
 
-        # Скачиваем полученный результат по прямой ссылке
+        # Извлекаем прямую ссылку на сгенерированный результат
         url = response.data[0].url
         logger.info(f"[openai_compat] resolved edit url: {url}")
 
-        import httpx
-
+        # Скачиваем бинарные данные картинки по сети
         async with httpx.AsyncClient() as client:
             resp = await client.get(url)
             resp.raise_for_status()
