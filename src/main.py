@@ -4,7 +4,8 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.redis import RedisStorage
+from redis.asyncio import Redis
 from loguru import logger
 
 from src.core.config import get_settings
@@ -39,12 +40,17 @@ async def main():
     logger.info("Initializing provider...")
     init_provider()
 
+    logger.info(f"Connecting to Redis at {settings.REDIS_HOST}:{settings.REDIS_PORT}...")
+    redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    await redis.ping()
+    storage = RedisStorage(redis=redis)
+
     bot = Bot(
         token=settings.BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
-    dp = Dispatcher(storage=MemoryStorage())
+    dp = Dispatcher(storage=storage)
 
     dp.update.outer_middleware(LoggerMiddleware())
     dp.update.outer_middleware(WhitelistMiddleware())
@@ -59,6 +65,7 @@ async def main():
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await close_db()
+        await redis.aclose()
         await bot.session.close()
         logger.info("Bot stopped.")
 

@@ -4,22 +4,28 @@ from src.services.settings import get_active_model, get_image_params
 from src.services.quota import increment_usage, log_generation
 
 
-async def generate_from_text(
-    user_id: int,
-    prompt: str,
-) -> bytes:
+async def generate_from_text(user_id: int, prompt: str) -> bytes:
     provider = get_provider()
     model = await get_active_model()
+    # Always fetch from DB — no defaults here, source of truth is DB/config
     params = await get_image_params()
 
     try:
-        result = await provider.generate(prompt=prompt, model=model, **params)
+        result = await provider.generate(
+            prompt=prompt,
+            model=model,
+            size=params["size"],
+            quality=params["quality"],
+        )
         await increment_usage(user_id)
         await log_generation(user_id, mode="text", model=model, prompt=prompt)
         return result
     except Exception as e:
-        logger.error(f"generate_from_text failed: {e}")
-        await log_generation(user_id, mode="text", model=model, prompt=prompt, success=False, error_msg=str(e))
+        logger.error(f"generate_from_text failed uid={user_id}: {e}")
+        await log_generation(
+            user_id, mode="text", model=model, prompt=prompt,
+            success=False, error_msg=str(e),
+        )
         raise
 
 
@@ -35,11 +41,20 @@ async def generate_from_images(
     mode = "image" if len(images) == 1 else "multi"
 
     try:
-        result = await provider.edit(images=images, prompt=prompt, model=model, **params)
+        result = await provider.edit(
+            images=images,
+            prompt=prompt,
+            model=model,
+            size=params["size"],
+            quality=params["quality"],
+        )
         await increment_usage(user_id)
         await log_generation(user_id, mode=mode, model=model, prompt=prompt)
         return result
     except Exception as e:
-        logger.error(f"generate_from_images failed: {e}")
-        await log_generation(user_id, mode=mode, model=model, prompt=prompt, success=False, error_msg=str(e))
+        logger.error(f"generate_from_images failed uid={user_id} mode={mode}: {e}")
+        await log_generation(
+            user_id, mode=mode, model=model, prompt=prompt,
+            success=False, error_msg=str(e),
+        )
         raise

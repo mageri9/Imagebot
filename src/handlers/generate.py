@@ -5,14 +5,17 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 from loguru import logger
 
-from src.keyboards.gen import mode_keyboard, multi_image_keyboard, cancel_keyboard
+from src.core.config import get_settings
+from src.keyboards.gen import mode_keyboard, multi_image_keyboard, cancel_keyboard, main_menu
 from src.services.image_gen import generate_from_text, generate_from_images
 from src.services.quota import check_quota
 from src.states.generate import GenerateForm
 
 router = Router()
 
-MAX_MULTI_IMAGES = 5
+
+def _max_multi() -> int:
+    return get_settings().MAX_MULTI_IMAGES
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
@@ -26,7 +29,7 @@ async def cmd_generate(message: Message, state: FSMContext):
     await state.set_state(GenerateForm.choosing_mode)
     await message.answer(
         f"🎨 Выбери режим генерации:\n<i>Использовано сегодня: {used}/{limit}</i>",
-        reply_markup=mode_keyboard(),
+        reply_markup=mode_keyboard(max_multi=_max_multi()),
     )
 
 
@@ -55,8 +58,9 @@ async def cb_mode_multi(query: CallbackQuery, state: FSMContext):
     await query.answer()
     await state.update_data(images=[], mode="multi")
     await state.set_state(GenerateForm.waiting_image)
+    max_multi = _max_multi()
     await query.message.edit_text(
-        f"🖼🖼 Отправляй фото по одному (до {MAX_MULTI_IMAGES} штук).\n"
+        f"🖼🖼 Отправляй фото по одному (до {max_multi} штук).\n"
         "Когда загрузишь все — нажми «Готово».",
         reply_markup=cancel_keyboard(),
     )
@@ -78,6 +82,7 @@ async def receive_prompt(message: Message, state: FSMContext):
         await message.answer_photo(
             photo=("result.png", image_bytes),
             caption=f"🎨 <b>Промпт:</b> {html.escape(prompt)}",
+            reply_markup=main_menu(),
         )
     except Exception as e:
         logger.error(f"Text generation error: {e}")
@@ -91,7 +96,6 @@ async def receive_image(message: Message, state: FSMContext, bot: Bot):
         await message.answer("Нужно отправить фото, не файл.")
         return
 
-    # Take highest resolution
     file_id = message.photo[-1].file_id
     file = await bot.get_file(file_id)
     buf = await bot.download_file(file.file_path)
@@ -102,9 +106,9 @@ async def receive_image(message: Message, state: FSMContext, bot: Bot):
     images.append(image_bytes)
 
     mode = data.get("mode", "image")
+    max_multi = _max_multi()
 
     if mode == "image":
-        # Single image — go straight to prompt
         await state.update_data(images=images)
         await state.set_state(GenerateForm.waiting_image_prompt)
         await message.answer(
@@ -112,10 +116,9 @@ async def receive_image(message: Message, state: FSMContext, bot: Bot):
             reply_markup=cancel_keyboard(),
         )
     else:
-        # Multi mode
         await state.update_data(images=images)
         count = len(images)
-        if count >= MAX_MULTI_IMAGES:
+        if count >= max_multi:
             await state.set_state(GenerateForm.waiting_image_prompt)
             await message.answer(
                 f"✅ Загружено {count} фото (максимум). Напиши промпт:",
@@ -125,7 +128,7 @@ async def receive_image(message: Message, state: FSMContext, bot: Bot):
             await state.set_state(GenerateForm.waiting_more_images)
             await message.answer(
                 f"✅ Фото {count} загружено. Отправь ещё или нажми «Готово»:",
-                reply_markup=multi_image_keyboard(),
+                reply_markup=multi_image_keyboard(count=count, max_multi=max_multi),
             )
 
 
@@ -135,7 +138,6 @@ async def receive_more_image(message: Message, state: FSMContext, bot: Bot):
 
 
 async def cb_done_collecting(query: CallbackQuery, state: FSMContext):
-    """User pressed "Done" after uploading images."""
     await query.answer()
     data = await state.get_data()
     count = len(data.get("images", []))
@@ -165,6 +167,7 @@ async def receive_image_prompt(message: Message, state: FSMContext):
         await message.answer_photo(
             photo=("result.png", image_bytes),
             caption=f"🎨 <b>Промпт:</b> {html.escape(prompt)}",
+            reply_markup=main_menu(),
         )
     except Exception as e:
         logger.error(f"Image generation error: {e}")
@@ -181,13 +184,14 @@ async def cb_cancel(query: CallbackQuery, state: FSMContext):
 
 async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("❌ Отменено.")
+    await message.answer("❌ Отменено.", reply_markup=main_menu())
 
 
 # ── Register ──────────────────────────────────────────────────────────────────
 
 def register_handlers():
     router.message.register(cmd_generate, Command("generate", "gen", "g"))
+    router.message.register(cmd_generate, F.text == "🎨 Сгенерировать")
     router.message.register(cmd_cancel, Command("cancel"), GenerateForm())
 
     router.callback_query.register(cb_mode_text, F.data == "mode:text", GenerateForm.choosing_mode)
