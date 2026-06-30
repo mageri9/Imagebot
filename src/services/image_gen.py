@@ -1,11 +1,13 @@
 import asyncio
 from loguru import logger
+import httpx
 
 from src.core.config import get_settings
 from src.providers.gen_api import GenAPIProvider
 from src.providers.openai_compat import OpenAICompatProvider
 from src.services.settings import get_active_model, get_image_params
-from src.services.quota import increment_usage, log_generation
+from src.services.quota import try_consume_quota, release_quota, log_generation
+
 
 settings = get_settings()
 
@@ -19,7 +21,7 @@ if settings.GENAPI_API_KEY:
             "provider": GenAPIProvider(
                 api_key=settings.GENAPI_API_KEY, base_url=settings.GENAPI_BASE_URL
             ),
-            "supports_edits": True,  # Поддерживает генерацию по картинкам
+            "supports_edits": False,  # Gen-API не принимает файлы через API корректно
         }
     )
 
@@ -34,18 +36,16 @@ if settings.PROVIDER_API_KEY:
         }
     )
 
-# Если настройки пусты, создаем дефолтную заглушку, чтобы избежать падения
 if not PROVIDER_POOL:
-    PROVIDER_POOL.append(
-        {
-            "name": "aitunnel_fallback",
-            "provider": OpenAICompatProvider(
-                api_key=settings.PROVIDER_API_KEY or "empty_key",
-                base_url=settings.PROVIDER_BASE_URL or "https://api.aitunnel.ru/v1",
-            ),
-            "supports_edits": False,
-        }
+    raise RuntimeError(
+        "Не настроен ни один провайдер генерации изображений. "
+        "Заполни GENAPI_API_KEY (для Gen-API) или PROVIDER_API_KEY + PROVIDER_BASE_URL "
+        "(для OpenAI-совместимого агрегатора) в .env и перезапусти бота."
     )
+
+logger.info(
+    f"Provider pool initialized: {[p['name'] for p in PROVIDER_POOL]}"
+)
 
 # Переменные состояния для Round Robin
 _rr_index = 0
@@ -91,14 +91,15 @@ async def _get_next_provider(require_edits: bool = False) -> dict:
 # ── 2. Умное сопоставление моделей (Smart Model Mapping) ──────────────────────
 MODEL_MAPS = {
     "genapi": {
-        # Теперь пускаем напрямую в нативную gpt-image-2 на Gen-API!
+        "gpt-image-2": "gpt-image-2",  # точное совпадение — приоритет
         "gpt-image": "gpt-image-2",
         "flux": "flux-2",
         "midjourney": "midjourney",
         "sd3": "sd3"
     },
     "aitunnel": {
-        "gpt-image": "gpt-image-2",  # Нативная GPT Image 2 в AITunnel
+        "gpt-image-2": "gpt-image-2",  # точное совпадение — приоритет
+        "gpt-image": "gpt-image-2",
         "flux": "flux-pro",
         "midjourney": "seedream",
         "sd3": "seedream"
@@ -108,13 +109,27 @@ MODEL_MAPS = {
 
 def _resolve_model(provider_name: str, requested_model: str) -> str:
     """Преобразует абстрактную модель в точное имя для активного провайдера."""
-    req_lower = requested_model.lower()
+    req_lower = requested_model.strip().lower()
     mapping = MODEL_MAPS.get(provider_name, {})
 
+    # Точное совпадение по ключу — самый предсказуемый путь
+    if req_lower in mapping:
+        return mapping[req_lower]
+
+    # Фолбэк на подстроку только если точного совпадения нет
+    # (на случай значений, оставшихся в DEFAULT_IMAGE_MODEL из .env, например "gpt-image-1")
     for key, target_name in mapping.items():
         if key in req_lower:
+            logger.warning(
+                f"[model resolve] '{requested_model}' matched by substring on key '{key}' "
+                f"for provider '{provider_name}' — consider using exact model key."
+            )
             return target_name
 
+    logger.warning(
+        f"[model resolve] No mapping found for '{requested_model}' on provider "
+        f"'{provider_name}', passing through as-is."
+    )
     return requested_model
 
 
@@ -125,6 +140,12 @@ def _resolve_model(provider_name: str, requested_model: str) -> str:
 
 
 async def generate_from_text(user_id: int, prompt: str) -> bytes:
+    allowed, used, limit = await try_consume_quota(user_id)
+    if not allowed:
+        raise RuntimeError(
+            f"Лимит на сегодня исчерпан ({used}/{limit}). Приходи завтра!"
+        )
+
     requested_model = await get_active_model()
     params = await get_image_params()
 
@@ -142,13 +163,15 @@ async def generate_from_text(user_id: int, prompt: str) -> bytes:
         )
 
         try:
-            result = await provider.generate(
-                prompt=prompt,
-                model=target_model,
-                size=params["size"],
-                quality=params["quality"],
+            result = await _call_with_retries(
+                lambda: provider.generate(
+                    prompt=prompt,
+                    model=target_model,
+                    size=params["size"],
+                    quality=params["quality"],
+                ),
+                prov_name,
             )
-            await increment_usage(user_id)
             await log_generation(
                 user_id, mode="text", model=target_model, prompt=prompt
             )
@@ -180,6 +203,7 @@ async def generate_from_text(user_id: int, prompt: str) -> bytes:
                 error_msg=f"[{prov_name}] {e}",
             )
 
+    await release_quota(user_id)
     raise RuntimeError(
         f"Все доступные ИИ-серверы временно недоступны. Последняя ошибка: {last_error}"
     )
@@ -190,6 +214,12 @@ async def generate_from_images(
     images: list[bytes],
     prompt: str,
 ) -> bytes:
+    allowed, used, limit = await try_consume_quota(user_id)
+    if not allowed:
+        raise RuntimeError(
+            f"Лимит на сегодня исчерпан ({used}/{limit}). Приходи завтра!"
+        )
+
     requested_model = await get_active_model()
     params = await get_image_params()
     mode = "image" if len(images) == 1 else "multi"
@@ -215,14 +245,16 @@ async def generate_from_images(
             )
 
             try:
-                result = await provider.edit(
-                    images=images,
-                    prompt=prompt,
-                    model=target_model,
-                    size=params["size"],
-                    quality=params["quality"],
+                result = await _call_with_retries(
+                    lambda: provider.edit(
+                        images=images,
+                        prompt=prompt,
+                        model=target_model,
+                        size=params["size"],
+                        quality=params["quality"],
+                    ),
+                    prov_name,
                 )
-                await increment_usage(user_id)
                 await log_generation(
                     user_id, mode=mode, model=target_model, prompt=prompt
                 )
@@ -253,10 +285,52 @@ async def generate_from_images(
                 )
     except NotImplementedError as ne:
         logger.error(f"Image generation request aborted: {ne}")
+        await release_quota(user_id)
         raise RuntimeError(
             "Генерация по фото временно отключена, так как у текущих провайдеров нет технической поддержки этой функции."
         )
 
+    await release_quota(user_id)
     raise RuntimeError(
         f"Все доступные ИИ-серверы генерации по фото временно недоступны. Последняя ошибка: {last_error}"
     )
+
+RETRYABLE_EXCEPTIONS = (
+    httpx.TimeoutException,
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.RemoteProtocolError,
+)
+
+MAX_RETRIES_PER_PROVIDER = 2
+RETRY_BACKOFF_BASE = 1.5  # seconds
+
+
+def _is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, RETRYABLE_EXCEPTIONS):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return False
+
+
+async def _call_with_retries(coro_factory, prov_name: str):
+    """
+    Вызывает coro_factory() с повторными попытками при временных сетевых ошибках
+    (таймауты, обрывы соединения, 5xx). Не ретраит ошибки авторизации, 4xx и т.д.
+    """
+    last_exc = None
+    for attempt in range(MAX_RETRIES_PER_PROVIDER + 1):
+        try:
+            return await coro_factory()
+        except Exception as e:
+            last_exc = e
+            if not _is_retryable(e) or attempt == MAX_RETRIES_PER_PROVIDER:
+                raise
+            wait = RETRY_BACKOFF_BASE * (2 ** attempt)
+            logger.warning(
+                f"[{prov_name}] transient error (attempt {attempt + 1}/{MAX_RETRIES_PER_PROVIDER + 1}): "
+                f"{e}. Retrying in {wait:.1f}s..."
+            )
+            await asyncio.sleep(wait)
+    raise last_exc

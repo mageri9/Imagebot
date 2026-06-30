@@ -31,7 +31,8 @@ async def get_limit(user_id: int) -> int:
 async def check_quota(user_id: int) -> tuple[bool, int, int]:
     """
     Returns (allowed, used, limit).
-    Admins always allowed.
+    Admins always allowed. Это «мягкая» проверка для UX (до старта ввода промпта),
+    не резервирует слот.
     """
     if user_id in get_settings().ADMIN_IDS:
         return True, 0, 999
@@ -41,12 +42,56 @@ async def check_quota(user_id: int) -> tuple[bool, int, int]:
     return used < limit, used, limit
 
 
-async def increment_usage(user_id: int) -> None:
+async def try_consume_quota(user_id: int) -> tuple[bool, int, int]:
+    """
+    Атомарно проверяет лимит и сразу резервирует слот (инкрементирует счётчик),
+    если лимит не превышен. Возвращает (allowed, used_after, limit).
+
+    Вызывать ПЕРЕД походом к провайдеру, не после.
+    Админы всегда проходят без резервирования слота.
+    """
+    if user_id in get_settings().ADMIN_IDS:
+        return True, 0, 999
+
+    limit = await get_limit(user_id)
+    db = await get_db()
+    today = _today()
+
+    await db.execute(
+        """
+        INSERT INTO daily_usage (user_id, date, count) VALUES (?, ?, 0)
+        ON CONFLICT(user_id, date) DO NOTHING
+        """,
+        (user_id, today),
+    )
+
+    cur = await db.execute(
+        """
+        UPDATE daily_usage
+        SET count = count + 1
+        WHERE user_id = ? AND date = ? AND count < ?
+        """,
+        (user_id, today, limit),
+    )
+    await db.commit()
+
+    used = await get_usage(user_id)
+
+    if cur.rowcount > 0:
+        return True, used, limit
+    return False, used, limit
+
+
+async def release_quota(user_id: int) -> None:
+    """Откатывает инкремент, если генерация в итоге не удалась (все провайдеры упали)."""
+    if user_id in get_settings().ADMIN_IDS:
+        return
     db = await get_db()
     await db.execute(
         """
-        INSERT INTO daily_usage (user_id, date, count) VALUES (?, ?, 1)
-        ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1
+        UPDATE daily_usage
+        SET count = count - 1
+        WHERE user_id = ? AND date = ? AND count > 0
         """,
         (user_id, _today()),
     )

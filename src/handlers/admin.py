@@ -9,7 +9,6 @@ from src.services.user import add_user, remove_user, list_users, set_user_limit
 from src.services.settings import (
     get_active_model,
     set_setting,
-    get_image_params,
     get_setting,
 )
 from src.services.quota import get_usage
@@ -17,7 +16,6 @@ from src.keyboards.gen import (
     admin_main_menu,
     admin_settings_menu,
     admin_model_choice,
-    admin_quality_choice,
     admin_provider_choice,
 )
 
@@ -27,12 +25,10 @@ router = Router()
 # ── Вспомогательные хелперы ──────────────────────────────────────────────────
 
 
-async def _get_settings_summary() -> tuple[str, str, str]:
+async def _get_settings_summary() -> tuple[str, str]:
     model = await get_active_model()
-    params = await get_image_params()
     provider = await get_setting("provider_type", "auto")
-    return model, params["quality"], provider
-
+    return model, provider
 
 # ── Интерактивная админ-панель (Inline UI) ───────────────────────────────────
 
@@ -58,8 +54,6 @@ async def cb_admin_close(query: CallbackQuery):
     await query.answer()
     await query.message.edit_text("👑 Админ-панель закрыта.")
 
-
-# Замена функции в src/handlers/admin.py
 
 
 async def cb_admin_users(query: CallbackQuery):
@@ -94,18 +88,13 @@ async def cb_admin_users(query: CallbackQuery):
     except Exception:
         pass
 
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:main"))
-
-    await query.message.edit_text("\n".join(lines), reply_markup=builder.as_markup())
-
 
 async def cb_admin_settings(query: CallbackQuery):
     await query.answer()
-    model, quality, provider = await _get_settings_summary()
+    model, provider = await _get_settings_summary()
     await query.message.edit_text(
-        "⚙️ <b>Настройки генерации ИИ:</b>\n\nНажмите на любой пункт для изменения:",
-        reply_markup=admin_settings_menu(model, quality, provider),
+        "⚙️ <b>Настройки генерации ИИ:</b>\n\nКачество зафиксировано на Low — самый дешёвый тариф.",
+        reply_markup=admin_settings_menu(model, provider),
     )
 
 
@@ -116,13 +105,6 @@ async def cb_select_model(query: CallbackQuery):
     await query.answer()
     await query.message.edit_text(
         "🤖 <b>Выберите модель по умолчанию:</b>", reply_markup=admin_model_choice()
-    )
-
-
-async def cb_select_quality(query: CallbackQuery):
-    await query.answer()
-    await query.message.edit_text(
-        "✨ <b>Выберите качество генерации:</b>", reply_markup=admin_quality_choice()
     )
 
 
@@ -238,6 +220,9 @@ async def cmd_set_provider(message: Message):
         f"✅ Предпочтительный провайдер установлен: <code>{ptype}</code>"
     )
 
+async def cb_noop(query: CallbackQuery):
+    await query.answer("Зафиксировано — изменить нельзя.", show_alert=False)
+
 
 def register_handlers():
     is_admin = IsAdmin()
@@ -256,24 +241,16 @@ def register_handlers():
     router.callback_query.register(
         cb_admin_settings, F.data == "admin:settings", is_admin
     )
-
     router.callback_query.register(
         cb_select_model, F.data == "admin:select_model", is_admin
     )
     router.callback_query.register(
-        cb_select_quality, F.data == "admin:select_quality", is_admin
-    )
-    router.callback_query.register(
         cb_select_provider, F.data == "admin:select_provider", is_admin
     )
-
-    # Регистрация сохранений параметров
     router.callback_query.register(
         cb_save_model, F.data.startswith("admin:model:"), is_admin
     )
     router.callback_query.register(
-        cb_save_quality, F.data.startswith("admin:quality:"), is_admin
-    )
-    router.callback_query.register(
         cb_save_provider, F.data.startswith("admin:provider:"), is_admin
     )
+    router.callback_query.register(cb_noop, F.data == "admin:noop", is_admin)

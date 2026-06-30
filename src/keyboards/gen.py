@@ -72,13 +72,13 @@ def admin_main_menu() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def admin_settings_menu(model: str, quality: str, provider: str) -> InlineKeyboardMarkup:
+def admin_settings_menu(model: str, provider: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text=f"🤖 Модель: {model}", callback_data="admin:select_model"),
     )
     builder.row(
-        InlineKeyboardButton(text=f"✨ Качество: {quality}", callback_data="admin:select_quality"),
+        InlineKeyboardButton(text="✨ Качество: Low (фикс.)", callback_data="admin:noop"),
     )
     builder.row(
         InlineKeyboardButton(text=f"🔌 Провайдер: {provider}", callback_data="admin:select_provider"),
@@ -98,19 +98,6 @@ def admin_model_choice() -> InlineKeyboardMarkup:
     builder.row(
         InlineKeyboardButton(text="SD 3", callback_data="admin:model:sd3"),
         InlineKeyboardButton(text="GPT-Image 2", callback_data="admin:model:gpt-image-2"),
-    )
-    builder.row(
-        InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:settings"),
-    )
-    return builder.as_markup()
-
-
-def admin_quality_choice() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="Low", callback_data="admin:quality:low"),
-        InlineKeyboardButton(text="Medium", callback_data="admin:quality:medium"),
-        InlineKeyboardButton(text="High", callback_data="admin:quality:high"),
     )
     builder.row(
         InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:settings"),

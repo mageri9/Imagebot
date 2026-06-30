@@ -31,6 +31,10 @@ class OpenAICompatProvider:
 
     def __init__(self, api_key: str, base_url: str):
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._http_client = httpx.AsyncClient()
+
+    async def close(self) -> None:
+        await self._http_client.aclose()
 
     # ── internal helpers ──────────────────────────────────────────────────────
 
@@ -98,10 +102,9 @@ class OpenAICompatProvider:
         elif getattr(img_item, "url", None):
             url = img_item.url
             logger.info(f"[openai_compat] resolved generate url: {url}")
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                return resp.content
+            resp = await self._http_client.get(url)
+            resp.raise_for_status()
+            return resp.content
         else:
             raise ValueError(f"No image data returned from provider: {img_item}")
 
@@ -132,6 +135,7 @@ class OpenAICompatProvider:
             image=image_file,
             prompt=prompt,
             size=size,
+            quality=quality,
             n=1,
         )
 
@@ -146,12 +150,12 @@ class OpenAICompatProvider:
             return img_bytes
 
         # 2. Если ИИ-сервер вернул прямую ссылку
+
         elif getattr(img_item, "url", None):
             url = img_item.url
             logger.info(f"[openai_compat] resolved edit url: {url}")
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                return resp.content
+            resp = await self._http_client.get(url)
+            resp.raise_for_status()
+            return resp.content
         else:
             raise ValueError(f"No image data returned from provider: {img_item}")

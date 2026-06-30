@@ -13,7 +13,7 @@ from src.core.db import init_db, close_db
 from src.core.router_manager import setup_routers
 from src.middlewares.auth import WhitelistMiddleware
 from src.middlewares.logger import LoggerMiddleware
-from src.providers.registry import init_provider
+from src.middlewares.throttle import ThrottleMiddleware
 
 
 async def main():
@@ -37,8 +37,6 @@ async def main():
     logger.info("Initializing DB...")
     await init_db()
 
-    logger.info("Initializing provider...")
-    init_provider()
 
     logger.info(f"Connecting to Redis at {settings.REDIS_HOST}:{settings.REDIS_PORT}...")
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
@@ -52,6 +50,7 @@ async def main():
 
     dp = Dispatcher(storage=storage)
 
+    dp.update.outer_middleware(ThrottleMiddleware(rate_limit=0.7))
     dp.update.outer_middleware(LoggerMiddleware())
     dp.update.outer_middleware(WhitelistMiddleware())
 
@@ -64,6 +63,12 @@ async def main():
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        from src.services.image_gen import PROVIDER_POOL
+
+        for prov_config in PROVIDER_POOL:
+            prov = prov_config["provider"]
+            if hasattr(prov, "close"):
+                await prov.close()
         await close_db()
         await redis.aclose()
         await bot.session.close()

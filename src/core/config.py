@@ -20,11 +20,11 @@ class Settings(BaseSettings):
     GENAPI_API_KEY: str = ""
 
     # Model — default, overridden from DB at runtime
-    DEFAULT_IMAGE_MODEL: str = "gpt-image-1"
+    DEFAULT_IMAGE_MODEL: str = "gpt-image-2"
 
     # Generation defaults (also overridden from DB)
     IMAGE_SIZE: str = "1024x1024"
-    IMAGE_QUALITY: str = "medium"
+    IMAGE_QUALITY: str = "low"
 
     # Multi-image mode
     MAX_MULTI_IMAGES: int = 3

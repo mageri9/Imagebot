@@ -18,24 +18,19 @@ class GenAPIProvider:
     Docs: https://gen-api.ru/docs
     """
 
-    DEFAULT_POLL_INTERVAL = 2.0  # seconds between polls
+    DEFAULT_POLL_INTERVAL = 2.0  # starting interval between polls (seconds)
+    DEFAULT_MAX_POLL_INTERVAL = 10.0  # cap for backoff growth
     DEFAULT_TIMEOUT = 120.0  # give up after N seconds
     GENERATE_PATH = "/api/v1/networks/{model}"
     STATUS_PATH = "/api/v1/request/get/{request_id}"
 
-    # Gen-API uses its own size tokens
-    SIZE_MAP = {
-        "1024x1024": "1:1",
-        "1792x1024": "16:9",
-        "1024x1792": "9:16",
-        "512x512": "1:1",
-    }
 
     def __init__(
         self,
         api_key: str,
         base_url: str = "https://api.gen-api.ru",
         poll_interval: float = DEFAULT_POLL_INTERVAL,
+        max_poll_interval: float = DEFAULT_MAX_POLL_INTERVAL,
         timeout: float = DEFAULT_TIMEOUT,
     ):
         self._base_url = base_url.rstrip("/")
@@ -45,12 +40,14 @@ class GenAPIProvider:
             "Accept": "application/json",
         }
         self._poll_interval = poll_interval
+        self._max_poll_interval = max_poll_interval
         self._timeout = timeout
+        self._client = httpx.AsyncClient(timeout=timeout)
+
+    async def close(self) -> None:
+        await self._client.aclose()
 
     # ── internal helpers ──────────────────────────────────────────────────────
-
-    def _size_to_ratio(self, size: str) -> str:
-        return self.SIZE_MAP.get(size, "1:1")
 
     async def _submit(
         self,
@@ -72,13 +69,42 @@ class GenAPIProvider:
         logger.debug(f"[genapi] submitted request_id={request_id}")
         return str(request_id)
 
+    async def _submit_multipart(
+        self,
+        client: httpx.AsyncClient,
+        model: str,
+        data: dict,
+        files: list,
+    ) -> str:
+        url = self._base_url + self.GENERATE_PATH.format(model=model)
+        logger.debug(
+            f"[genapi] submit multipart POST {url} fields={list(data.keys())} files={len(files)}"
+        )
+
+        # Убираем Content-Type из заголовков — при multipart httpx сам выставит с boundary
+        headers = {
+            k: v for k, v in self._headers.items() if k.lower() != "content-type"
+        }
+
+        resp = await client.post(url, data=data, files=files, headers=headers)
+        resp.raise_for_status()
+        result = resp.json()
+
+        request_id = result.get("request_id") or result.get("id")
+        if not request_id:
+            raise RuntimeError(f"Gen-API did not return request_id: {result}")
+
+        logger.debug(f"[genapi] submitted request_id={request_id}")
+        return str(request_id)
+
     async def _poll(self, client: httpx.AsyncClient, request_id: str) -> dict:
         url = self._base_url + self.STATUS_PATH.format(request_id=request_id)
         elapsed = 0.0
+        current_interval = self._poll_interval
 
         while elapsed < self._timeout:
-            await asyncio.sleep(self._poll_interval)
-            elapsed += self._poll_interval
+            await asyncio.sleep(current_interval)
+            elapsed += current_interval
 
             resp = await client.get(url, headers=self._headers)
             resp.raise_for_status()
@@ -86,7 +112,8 @@ class GenAPIProvider:
 
             status = data.get("status", "").lower()
             logger.debug(
-                f"[genapi] poll request_id={request_id} status={status} elapsed={elapsed:.0f}s"
+                f"[genapi] poll request_id={request_id} status={status} "
+                f"elapsed={elapsed:.0f}s next_interval={current_interval:.1f}s"
             )
 
             if status == "success":
@@ -95,6 +122,9 @@ class GenAPIProvider:
                 raise RuntimeError(
                     f"Gen-API generation failed: {data.get('error') or data}"
                 )
+
+            # Экспоненциальный рост интервала с потолком — реже опрашиваем долгие задачи
+            current_interval = min(current_interval * 1.5, self._max_poll_interval)
 
         raise TimeoutError(
             f"Gen-API timed out after {self._timeout}s (request_id={request_id})"
@@ -223,15 +253,15 @@ class GenAPIProvider:
 
         payload = {
             "prompt": prompt,
-            "ratio": self._size_to_ratio(size),
+            "image_size": size,
             "quality": quality,
             "num_images": 1,
+            "output_format": "png",
         }
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            request_id = await self._submit(client, model, payload)
-            result = await self._poll(client, request_id)
-            return await self._download_result(client, result)
+        request_id = await self._submit(self._client, model, payload)
+        result = await self._poll(self._client, request_id)
+        return await self._download_result(self._client, result)
 
     async def edit(
         self,
@@ -245,26 +275,26 @@ class GenAPIProvider:
             f"[genapi] edit model={model} images={len(images)} size={size} quality={quality}"
         )
 
-        # Если передано больше одного фото, склеиваем их в одну горизонтальную панораму,
-        # чтобы нейросеть Gen-API увидела все исходные лица/объекты на одном холсте
+        # Gen-API не поддерживает JSON-массив файлов через multipart —
+        # склеиваем фото в панораму и шлём одним файлом через multipart
         if len(images) == 1:
-            prepared_images = [self._to_b64(images[0])]
+            img_bytes = images[0]
         else:
-            logger.info(
-                f"[genapi] stitching {len(images)} images into a single canvas for the model"
-            )
-            stitched_png = self._composite_images(images)
-            prepared_images = [self._to_b64(stitched_png)]
+            logger.info(f"[genapi] stitching {len(images)} images for single upload")
+            img_bytes = self._composite_images(images)
 
-        payload = {
+        logger.info(f"[genapi] sending image as multipart file")
+
+        data = {
             "prompt": prompt,
-            "ratio": self._size_to_ratio(size),
+            "image_size": size,
             "quality": quality,
-            "num_images": 1,
-            "images": prepared_images,
+            "num_images": "1",
+            "output_format": "png",
         }
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            request_id = await self._submit(client, model, payload)
-            result = await self._poll(client, request_id)
-            return await self._download_result(client, result)
+        files = [("image_urls", ("image.png", img_bytes, "image/png"))]
+
+        request_id = await self._submit_multipart(self._client, model, data, files)
+        result = await self._poll(self._client, request_id)
+        return await self._download_result(self._client, result)
