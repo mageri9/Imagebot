@@ -97,7 +97,7 @@ def admin_model_choice() -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(text="SD 3", callback_data="admin:model:sd3"),
-        InlineKeyboardButton(text="GPT-Image", callback_data="admin:model:gpt-image"),
+        InlineKeyboardButton(text="GPT-Image 2", callback_data="admin:model:gpt-image-2"),
     )
     builder.row(
         InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:settings"),

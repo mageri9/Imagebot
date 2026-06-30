@@ -30,7 +30,7 @@ if settings.PROVIDER_API_KEY:
             "provider": OpenAICompatProvider(
                 api_key=settings.PROVIDER_API_KEY, base_url=settings.PROVIDER_BASE_URL
             ),
-            "supports_edits": False,  # AITunnel не поддерживает генерацию по картинкам
+            "supports_edits": True,
         }
     )
 
@@ -91,17 +91,17 @@ async def _get_next_provider(require_edits: bool = False) -> dict:
 # ── 2. Умное сопоставление моделей (Smart Model Mapping) ──────────────────────
 MODEL_MAPS = {
     "genapi": {
-        "gpt-image": "flux-2",  # У GenAPI нет gpt-image, пускаем через качественный Flux-2
+        "gpt-image": "flux-2",     # Посылаем в стабильный Flux-2 на GenAPI
         "flux": "flux-2",
         "midjourney": "midjourney",
-        "sd3": "sd3",
+        "sd3": "sd3"
     },
     "aitunnel": {
-        "gpt-image": "gpt-image",  # Нативная GPT Image 2 в AITunnel
-        "flux": "flux-pro",  # Нативная Flux Pro в AITunnel
-        "midjourney": "seedream",  # Сверхреалистичная модель Seedream 5.0 в AITunnel
-        "sd3": "seedream",
-    },
+        "gpt-image": "gpt-image-2", # Нативная GPT Image 2 в AITunnel (исправлено на gpt-image-2)
+        "flux": "flux-pro",
+        "midjourney": "seedream",
+        "sd3": "seedream"
+    }
 }
 
 

@@ -20,8 +20,9 @@ class GenAPIProvider:
 
     DEFAULT_POLL_INTERVAL = 2.0   # seconds between polls
     DEFAULT_TIMEOUT = 120.0       # give up after N seconds
-    GENERATE_PATH = "/api/v1/request/{model}"
-    STATUS_PATH = "/api/v1/request/{request_id}"
+
+    GENERATE_PATH = "/api/v1/networks/{model}"
+    STATUS_PATH = "/api/v1/request/get/{request_id}"
 
     # Gen-API uses its own size tokens
     SIZE_MAP = {

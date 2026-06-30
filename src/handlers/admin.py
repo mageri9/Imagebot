@@ -59,13 +59,19 @@ async def cb_admin_close(query: CallbackQuery):
     await query.message.edit_text("👑 Админ-панель закрыта.")
 
 
+# Замена функции в src/handlers/admin.py
+
+
 async def cb_admin_users(query: CallbackQuery):
     await query.answer()
     users = await list_users()
     if not users:
-        await query.message.edit_text(
-            "Нет активных пользователей.", reply_markup=admin_main_menu()
-        )
+        try:
+            await query.message.edit_text(
+                "Нет активных пользователей.", reply_markup=admin_main_menu()
+            )
+        except Exception:
+            pass  # Игнорируем ошибку немодифицированного сообщения
         return
 
     lines = ["👥 <b>Активные пользователи:</b>\n"]
@@ -75,8 +81,18 @@ async def cb_admin_users(query: CallbackQuery):
         username = f"@{u['username']}" if u["username"] else "—"
         lines.append(
             f"• <code>{u['user_id']}</code> {name} ({username})\n"
-            f"  Лимит: {used}/{u['daily_limit']} сегодня\n"
+            f"  Лимит: {used}/{u['daily_limit']} today\n"
         )
+
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:main"))
+
+    try:
+        await query.message.edit_text(
+            "\n".join(lines), reply_markup=builder.as_markup()
+        )
+    except Exception:
+        pass
 
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:main"))
