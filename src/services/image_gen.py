@@ -91,17 +91,17 @@ async def _get_next_provider(require_edits: bool = False) -> dict:
 # ── 2. Умное сопоставление моделей (Smart Model Mapping) ──────────────────────
 MODEL_MAPS = {
     "genapi": {
-        "gpt-image": "flux-2",     # Посылаем в стабильный Flux-2 на GenAPI
+        "gpt-image": "flux-2",  # Посылаем в стабильный Flux-2 на GenAPI
         "flux": "flux-2",
         "midjourney": "midjourney",
-        "sd3": "sd3"
+        "sd3": "sd3",
     },
     "aitunnel": {
-        "gpt-image": "gpt-image-2", # Нативная GPT Image 2 в AITunnel (исправлено на gpt-image-2)
+        "gpt-image": "gpt-image-2",  # Нативная GPT Image 2 в AITunnel (исправлено на gpt-image-2)
         "flux": "flux-pro",
         "midjourney": "seedream",
-        "sd3": "seedream"
-    }
+        "sd3": "seedream",
+    },
 }
 
 
@@ -118,6 +118,9 @@ def _resolve_model(provider_name: str, requested_model: str) -> str:
 
 
 # ── 3. Логика генерации (с Circuit Breaker и Свойствами провайдеров) ──────────
+
+
+# Полное обновление функций генерации в src/services/image_gen.py
 
 
 async def generate_from_text(user_id: int, prompt: str) -> bytes:
@@ -149,7 +152,20 @@ async def generate_from_text(user_id: int, prompt: str) -> bytes:
                 user_id, mode="text", model=target_model, prompt=prompt
             )
             return result
+
+        except (ValueError, KeyError, TypeError) as e:
+            # Ошибка локального разбора успешного ответа (деньги уже списались!)
+            # Мгновенно блокируем fallback, чтобы не платить повторно на другом сервисе
+            logger.critical(
+                f"Parser error on SUCCESSFUL generation from '{prov_name}': {e}. Blocking fallback to prevent double-charging!"
+            )
+            raise RuntimeError(
+                f"Изображение было успешно сгенерировано провайдером '{prov_name}', "
+                f"но произошла внутренняя ошибка обработки ответа: {e}. Пожалуйста, сообщите администратору."
+            ) from e
+
         except Exception as e:
+            # Обычные сетевые или авторизационные ошибки (деньги не списаны) — делаем fallback
             logger.warning(
                 f"Provider '{prov_name}' failed with model '{target_model}': {e}. Trying fallback..."
             )
@@ -180,7 +196,6 @@ async def generate_from_images(
     last_error = None
 
     try:
-        # Считаем количество провайдеров, которые физически поддерживают генерацию по фото
         edit_pool_len = len([p for p in PROVIDER_POOL if p.get("supports_edits", True)])
         if edit_pool_len == 0:
             raise NotImplementedError(
@@ -188,7 +203,6 @@ async def generate_from_images(
             )
 
         for attempt in range(edit_pool_len):
-            # Запрашиваем провайдеры строго с флагом require_edits=True
             prov_config = await _get_next_provider(require_edits=True)
             prov_name = prov_config["name"]
             provider = prov_config["provider"]
@@ -212,6 +226,17 @@ async def generate_from_images(
                     user_id, mode=mode, model=target_model, prompt=prompt
                 )
                 return result
+
+            except (ValueError, KeyError, TypeError) as e:
+                # Блокируем повторные списания при успешной генерации по фото
+                logger.critical(
+                    f"Parser error on SUCCESSFUL image edit from '{prov_name}': {e}. Blocking fallback to prevent double-charging!"
+                )
+                raise RuntimeError(
+                    f"Изображение было успешно изменено провайдером '{prov_name}', "
+                    f"но произошла внутренняя ошибка обработки ответа: {e}. Пожалуйста, сообщите администратору."
+                ) from e
+
             except Exception as e:
                 logger.warning(
                     f"Provider '{prov_name}' failed with model '{target_model}': {e}. Trying fallback..."
