@@ -50,9 +50,27 @@ _lock = asyncio.Lock()
 
 
 async def _get_next_provider() -> dict:
-    """Выбирает следующий провайдер из пула по кругу (Round Robin)."""
+    """Выбирает провайдер с учетом принудительного выбора в БД или по кругу (Round Robin)."""
     global _rr_index
+
+    # Ленивый импорт для предотвращения циклической зависимости
+    from src.services.settings import get_setting
+
+    forced_provider = await get_setting("provider_type", "auto")
+    forced_provider = forced_provider.lower()
+
     async with _lock:
+        # Если админ принудительно зафиксировал конкретного провайдера
+        if forced_provider in ("genapi", "aitunnel", "openai_compat"):
+            target_name = (
+                "aitunnel" if forced_provider == "openai_compat" else forced_provider
+            )
+            # Ищем его среди инициализированных (настроенных в .env) провайдеров в пуле
+            for prov in PROVIDER_POOL:
+                if prov["name"] == target_name:
+                    return prov
+
+        # Иначе используем стандартную балансировку Round Robin
         prov_config = PROVIDER_POOL[_rr_index % len(PROVIDER_POOL)]
         _rr_index += 1
         return prov_config

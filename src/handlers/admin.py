@@ -20,6 +20,7 @@ async def cmd_admin(message: Message):
         "/setlimit &lt;user_id&gt; &lt;limit&gt; — изменить лимит\n"
         "/setmodel &lt;model&gt; — сменить модель\n"
         "/setquality &lt;low|medium|high&gt; — качество\n"
+        "/setprovider &lt;genapi|aitunnel|auto&gt; — выбрать ИИ\n"
         "/stats — статистика\n"
         "/model — текущая модель"
     )
@@ -141,6 +142,19 @@ async def cmd_model(message: Message):
         f"Качество: <code>{params['quality']}</code>"
     )
 
+async def cmd_set_provider(message: Message):
+    parts = message.text.split()
+    if len(parts) < 2 or parts[1].lower() not in ("genapi", "aitunnel", "openai_compat", "auto"):
+        await message.answer("Использование: /setprovider &lt;genapi|aitunnel|auto&gt;")
+        return
+
+    ptype = parts[1].lower()
+    if ptype == "openai_compat":
+        ptype = "aitunnel"
+
+    await set_setting("provider_type", ptype)
+    await message.answer(f"✅ Предпочтительный провайдер установлен: <code>{ptype}</code>")
+
 
 def register_handlers():
     is_admin = IsAdmin()
@@ -153,3 +167,4 @@ def register_handlers():
     router.message.register(cmd_set_model, Command("setmodel"), is_admin)
     router.message.register(cmd_set_quality, Command("setquality"), is_admin)
     router.message.register(cmd_model, Command("model"), is_admin)
+    router.message.register(cmd_set_provider, Command("setprovider"), is_admin)
