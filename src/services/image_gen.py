@@ -19,6 +19,7 @@ if settings.GENAPI_API_KEY:
             "provider": GenAPIProvider(
                 api_key=settings.GENAPI_API_KEY, base_url=settings.GENAPI_BASE_URL
             ),
+            "supports_edits": True,  # Поддерживает генерацию по картинкам
         }
     )
 
@@ -29,6 +30,7 @@ if settings.PROVIDER_API_KEY:
             "provider": OpenAICompatProvider(
                 api_key=settings.PROVIDER_API_KEY, base_url=settings.PROVIDER_BASE_URL
             ),
+            "supports_edits": False,  # AITunnel не поддерживает генерацию по картинкам
         }
     )
 
@@ -41,6 +43,7 @@ if not PROVIDER_POOL:
                 api_key=settings.PROVIDER_API_KEY or "empty_key",
                 base_url=settings.PROVIDER_BASE_URL or "https://api.aitunnel.ru/v1",
             ),
+            "supports_edits": False,
         }
     )
 
@@ -49,8 +52,8 @@ _rr_index = 0
 _lock = asyncio.Lock()
 
 
-async def _get_next_provider() -> dict:
-    """Выбирает провайдер с учетом принудительного выбора в БД или по кругу (Round Robin)."""
+async def _get_next_provider(require_edits: bool = False) -> dict:
+    """Выбирает провайдер с учетом принудительного выбора в БД, по кругу и поддержки функций."""
     global _rr_index
 
     # Ленивый импорт для предотвращения циклической зависимости
@@ -59,25 +62,33 @@ async def _get_next_provider() -> dict:
     forced_provider = await get_setting("provider_type", "auto")
     forced_provider = forced_provider.lower()
 
+    # Фильтруем пул по поддержке генерации по изображениям, если это требуется
+    available_pool = PROVIDER_POOL
+    if require_edits:
+        available_pool = [p for p in PROVIDER_POOL if p.get("supports_edits", True)]
+        if not available_pool:
+            raise NotImplementedError(
+                "Нет доступных провайдеров с поддержкой генерации по фото."
+            )
+
     async with _lock:
         # Если админ принудительно зафиксировал конкретного провайдера
         if forced_provider in ("genapi", "aitunnel", "openai_compat"):
             target_name = (
                 "aitunnel" if forced_provider == "openai_compat" else forced_provider
             )
-            # Ищем его среди инициализированных (настроенных в .env) провайдеров в пуле
-            for prov in PROVIDER_POOL:
+            # Проверяем, есть ли принудительный провайдер в нашем отфильтрованном пуле
+            for prov in available_pool:
                 if prov["name"] == target_name:
                     return prov
 
-        # Иначе используем стандартную балансировку Round Robin
-        prov_config = PROVIDER_POOL[_rr_index % len(PROVIDER_POOL)]
+        # Иначе используем стандартную балансировку Round Robin по доступному пулу
+        prov_config = available_pool[_rr_index % len(available_pool)]
         _rr_index += 1
         return prov_config
 
 
 # ── 2. Умное сопоставление моделей (Smart Model Mapping) ──────────────────────
-# Сопоставляет пользовательский выбор из БД с точными названиями моделей на стороне ИИ
 MODEL_MAPS = {
     "genapi": {
         "gpt-image": "flux-2",  # У GenAPI нет gpt-image, пускаем через качественный Flux-2
@@ -99,16 +110,14 @@ def _resolve_model(provider_name: str, requested_model: str) -> str:
     req_lower = requested_model.lower()
     mapping = MODEL_MAPS.get(provider_name, {})
 
-    # Ищем частичное совпадение ключевого слова в названии
     for key, target_name in mapping.items():
         if key in req_lower:
             return target_name
 
-    # Если совпадений в таблице нет, передаем оригинальное имя
     return requested_model
 
 
-# ── 3. Логика генерации (с Circuit Breaker и Smart Mapping) ──────────────────
+# ── 3. Логика генерации (с Circuit Breaker и Свойствами провайдеров) ──────────
 
 
 async def generate_from_text(user_id: int, prompt: str) -> bytes:
@@ -117,13 +126,11 @@ async def generate_from_text(user_id: int, prompt: str) -> bytes:
 
     last_error = None
 
-    # Пытаемся по очереди пройти по всем провайдерам в пуле (Circuit Breaker)
     for attempt in range(len(PROVIDER_POOL)):
-        prov_config = await _get_next_provider()
+        prov_config = await _get_next_provider(require_edits=False)
         prov_name = prov_config["name"]
         provider = prov_config["provider"]
 
-        # Определяем точное имя модели под конкретного провайдера
         target_model = _resolve_model(prov_name, requested_model)
 
         logger.info(
@@ -172,43 +179,58 @@ async def generate_from_images(
 
     last_error = None
 
-    for attempt in range(len(PROVIDER_POOL)):
-        prov_config = await _get_next_provider()
-        prov_name = prov_config["name"]
-        provider = prov_config["provider"]
+    try:
+        # Считаем количество провайдеров, которые физически поддерживают генерацию по фото
+        edit_pool_len = len([p for p in PROVIDER_POOL if p.get("supports_edits", True)])
+        if edit_pool_len == 0:
+            raise NotImplementedError(
+                "В пуле нет активных провайдеров с поддержкой генерации по фото."
+            )
 
-        # Определяем точное имя модели под конкретного провайдера
-        target_model = _resolve_model(prov_name, requested_model)
+        for attempt in range(edit_pool_len):
+            # Запрашиваем провайдеры строго с флагом require_edits=True
+            prov_config = await _get_next_provider(require_edits=True)
+            prov_name = prov_config["name"]
+            provider = prov_config["provider"]
 
-        logger.info(
-            f"[image gen] Attempt {attempt + 1}/{len(PROVIDER_POOL)}: trying '{prov_name}' with model '{target_model}'"
+            target_model = _resolve_model(prov_name, requested_model)
+
+            logger.info(
+                f"[image gen] Attempt {attempt + 1}/{edit_pool_len}: trying '{prov_name}' with model '{target_model}'"
+            )
+
+            try:
+                result = await provider.edit(
+                    images=images,
+                    prompt=prompt,
+                    model=target_model,
+                    size=params["size"],
+                    quality=params["quality"],
+                )
+                await increment_usage(user_id)
+                await log_generation(
+                    user_id, mode=mode, model=target_model, prompt=prompt
+                )
+                return result
+            except Exception as e:
+                logger.warning(
+                    f"Provider '{prov_name}' failed with model '{target_model}': {e}. Trying fallback..."
+                )
+                last_error = e
+                await log_generation(
+                    user_id,
+                    mode=mode,
+                    model=target_model,
+                    prompt=prompt,
+                    success=False,
+                    error_msg=f"[{prov_name}] {e}",
+                )
+    except NotImplementedError as ne:
+        logger.error(f"Image generation request aborted: {ne}")
+        raise RuntimeError(
+            "Генерация по фото временно отключена, так как у текущих провайдеров нет технической поддержки этой функции."
         )
 
-        try:
-            result = await provider.edit(
-                images=images,
-                prompt=prompt,
-                model=target_model,
-                size=params["size"],
-                quality=params["quality"],
-            )
-            await increment_usage(user_id)
-            await log_generation(user_id, mode=mode, model=target_model, prompt=prompt)
-            return result
-        except Exception as e:
-            logger.warning(
-                f"Provider '{prov_name}' failed with model '{target_model}': {e}. Trying fallback..."
-            )
-            last_error = e
-            await log_generation(
-                user_id,
-                mode=mode,
-                model=target_model,
-                prompt=prompt,
-                success=False,
-                error_msg=f"[{prov_name}] {e}",
-            )
-
     raise RuntimeError(
-        f"Все доступные ИИ-серверы временно недоступны. Последняя ошибка: {last_error}"
+        f"Все доступные ИИ-серверы генерации по фото временно недоступны. Последняя ошибка: {last_error}"
     )
