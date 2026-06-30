@@ -128,6 +128,8 @@ async def receive_image(message: Message, state: FSMContext, bot: Bot):
     images: list[str] = data.get("images", [])
     images.append(file_id)
 
+    logger.info(f"[multi] received image file_id={file_id}")
+
     mode = data.get("mode", "image")
     max_multi = _max_multi()
 
@@ -168,6 +170,9 @@ async def cb_done_collecting(query: CallbackQuery, state: FSMContext):
     await query.answer()
     data = await state.get_data()
     count = len(data.get("images", []))
+
+    logger.info(f"[multi] before generation images={count}")
+
     await state.set_state(GenerateForm.waiting_image_prompt)
     await query.message.edit_text(
         f"✅ Загружено {count} фото. Напиши промпт — что сделать с изображениями:",
