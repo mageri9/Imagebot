@@ -23,12 +23,18 @@ async def init_db() -> None:
     _conn = await aiosqlite.connect(settings.db_path)
     _conn.row_factory = aiosqlite.Row  # доступ по имени колонки
 
+    # Включаем WAL-режим для параллельного чтения и записи
+    await _conn.execute("PRAGMA journal_mode=WAL;")
+    # Настраиваем задержку ожидания блокировки до 5 секунд
+    await _conn.execute("PRAGMA busy_timeout=5000;")
+    await _conn.commit()
+
     schema_path = Path(__file__).resolve().parents[1] / "db" / "schema.sql"
     schema = schema_path.read_text(encoding="utf-8")
     await _conn.executescript(schema)
     await _conn.commit()
 
-    logger.info(f"DB initialized at {settings.db_path}")
+    logger.info(f"DB initialized at {settings.db_path} (WAL and busy_timeout enabled)")
 
 
 async def close_db() -> None:
