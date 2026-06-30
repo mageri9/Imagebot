@@ -7,16 +7,14 @@ from loguru import logger
 
 def _to_png(image_bytes: bytes) -> bytes:
     """
-    Convert any image to RGB PNG (no transparency).
-    Required by images/edits endpoint.
+    Convert any image to RGBA PNG (preserving transparency).
+    Required by OpenAI images/edits endpoint to act as a mask.
     """
     with Image.open(io.BytesIO(image_bytes)) as img:
-        if img.mode in ("RGBA", "LA"):
-            bg = Image.new("RGB", img.size, (255, 255, 255))
-            bg.paste(img, mask=img.split()[-1])
-            img = bg
-        elif img.mode != "RGB":
-            img = img.convert("RGB")
+        # Принудительно используем RGBA, чтобы сохранить прозрачные пиксели
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return buf.getvalue()
@@ -49,12 +47,13 @@ class OpenAICompatProvider:
     def _composite_images(images: list[bytes]) -> bytes:
         """
         Stitch multiple images into a horizontal strip.
-        Keeps all images at the same height (min height of all).
+        Keeps all images at the same height (min height of all) and preserves transparency.
         """
         pil_images = []
         for raw in images:
             with Image.open(io.BytesIO(raw)) as img:
-                pil_images.append(img.convert("RGB").copy())
+                # Сохраняем режим RGBA для каждого исходного фото
+                pil_images.append(img.convert("RGBA").copy())
 
         min_h = min(img.height for img in pil_images)
         resized = []
@@ -63,10 +62,13 @@ class OpenAICompatProvider:
             resized.append(img.resize((int(img.width * ratio), min_h), Image.LANCZOS))
 
         total_w = sum(img.width for img in resized)
-        canvas = Image.new("RGB", (total_w, min_h), (255, 255, 255))
+
+        # Создаем пустой абсолютно прозрачный холст (RGBA с прозрачностью 0)
+        canvas = Image.new("RGBA", (total_w, min_h), (0, 0, 0, 0))
         x = 0
         for img in resized:
-            canvas.paste(img, (x, 0))
+            # Накладываем изображение, используя его же альфа-канал в качестве маски
+            canvas.paste(img, (x, 0), img)
             x += img.width
 
         buf = io.BytesIO()
