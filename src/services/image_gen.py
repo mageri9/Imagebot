@@ -91,17 +91,18 @@ async def _get_next_provider(require_edits: bool = False) -> dict:
 # ── 2. Умное сопоставление моделей (Smart Model Mapping) ──────────────────────
 MODEL_MAPS = {
     "genapi": {
-        "gpt-image": "flux-2",  # Посылаем в стабильный Flux-2 на GenAPI
+        # Теперь пускаем напрямую в нативную gpt-image-2 на Gen-API!
+        "gpt-image": "gpt-image-2",
         "flux": "flux-2",
         "midjourney": "midjourney",
-        "sd3": "sd3",
+        "sd3": "sd3"
     },
     "aitunnel": {
-        "gpt-image": "gpt-image-2",  # Нативная GPT Image 2 в AITunnel (исправлено на gpt-image-2)
+        "gpt-image": "gpt-image-2",  # Нативная GPT Image 2 в AITunnel
         "flux": "flux-pro",
         "midjourney": "seedream",
-        "sd3": "seedream",
-    },
+        "sd3": "seedream"
+    }
 }
 
 
