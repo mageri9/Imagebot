@@ -2,7 +2,7 @@ import html
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from loguru import logger
 
 from src.core.config import get_settings
@@ -80,7 +80,7 @@ async def receive_prompt(message: Message, state: FSMContext):
         )
         await wait_msg.delete()
         await message.answer_photo(
-            photo=("result.png", image_bytes),
+            photo=BufferedInputFile(image_bytes, filename="result.png"),
             caption=f"🎨 <b>Промпт:</b> {html.escape(prompt)}",
             reply_markup=main_menu(),
         )
@@ -170,7 +170,7 @@ async def receive_image_prompt(message: Message, state: FSMContext, bot: Bot):
         )
         await wait_msg.delete()
         await message.answer_photo(
-            photo=("result.png", image_bytes),
+            photo=BufferedInputFile(image_bytes, filename="result.png"),
             caption=f"🎨 <b>Промпт:</b> {html.escape(prompt)}",
             reply_markup=main_menu(),
         )
