@@ -11,16 +11,15 @@ class GenAPIProvider:
     Native Gen-API provider (https://api.gen-api.ru).
 
     Flow:
-      1. POST /api/v1/request/{model}  → get request_id
-      2. Poll GET /api/v1/request/{request_id} until status == "success"
+      1. POST /api/v1/networks/{model}  → get request_id
+      2. Poll GET /api/v1/request/get/{request_id} until status == "success"
       3. Download result image from response URL
 
     Docs: https://gen-api.ru/docs
     """
 
-    DEFAULT_POLL_INTERVAL = 2.0   # seconds between polls
-    DEFAULT_TIMEOUT = 120.0       # give up after N seconds
-
+    DEFAULT_POLL_INTERVAL = 2.0  # seconds between polls
+    DEFAULT_TIMEOUT = 120.0  # give up after N seconds
     GENERATE_PATH = "/api/v1/networks/{model}"
     STATUS_PATH = "/api/v1/request/get/{request_id}"
 
@@ -86,14 +85,20 @@ class GenAPIProvider:
             data = resp.json()
 
             status = data.get("status", "").lower()
-            logger.debug(f"[genapi] poll request_id={request_id} status={status} elapsed={elapsed:.0f}s")
+            logger.debug(
+                f"[genapi] poll request_id={request_id} status={status} elapsed={elapsed:.0f}s"
+            )
 
             if status == "success":
                 return data
             if status in ("error", "failed", "cancelled"):
-                raise RuntimeError(f"Gen-API generation failed: {data.get('error') or data}")
+                raise RuntimeError(
+                    f"Gen-API generation failed: {data.get('error') or data}"
+                )
 
-        raise TimeoutError(f"Gen-API timed out after {self._timeout}s (request_id={request_id})")
+        raise TimeoutError(
+            f"Gen-API timed out after {self._timeout}s (request_id={request_id})"
+        )
 
     @staticmethod
     async def _download_result(client: httpx.AsyncClient, result: dict) -> bytes:
@@ -102,7 +107,7 @@ class GenAPIProvider:
 
         raw_data = None
 
-        # 1. Сначала проверяем нативный формат Gen-API "result" (массив ссылок)
+        # Сначала проверяем нативный формат Gen-API "result" (массив ссылок)
         if "result" in result:
             output = result["result"]
             if isinstance(output, list) and len(output) > 0:
@@ -110,7 +115,7 @@ class GenAPIProvider:
             elif isinstance(output, str):
                 raw_data = output
 
-        # 2. Проверяем "full_response" (массив объектов с ключом url)
+        # Проверяем "full_response"
         elif "full_response" in result:
             response = result["full_response"]
             if isinstance(response, list) and response:
@@ -120,7 +125,7 @@ class GenAPIProvider:
                 elif isinstance(item, str):
                     raw_data = item
 
-        # 3. Резервные стандартные поля
+        # Резервные поля
         elif result.get("b64_json"):
             raw_data = result.get("b64_json")
         elif result.get("image"):
@@ -141,10 +146,9 @@ class GenAPIProvider:
                 raw_data = images
 
         if not raw_data:
-            # Выбрасываем ValueError — это сигнал для роутера остановить fallback!
             raise ValueError(f"Gen-API result has no recognizable image data: {result}")
 
-        # 4. Если это base64 строка (не начинается с http)
+        # Если это base64 строка (не начинается с http)
         if isinstance(raw_data, str) and not raw_data.startswith("http"):
             try:
                 if "," in raw_data:
@@ -157,7 +161,7 @@ class GenAPIProvider:
             except Exception as e:
                 raise ValueError(f"Failed to decode base64 from Gen-API: {e}")
 
-        # 5. Если это URL — скачиваем картинку по сети
+        # Если это URL — скачиваем картинку
         url = raw_data
         logger.info(f"[genapi] resolved image url={url}")
 
@@ -176,6 +180,35 @@ class GenAPIProvider:
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             return base64.b64encode(buf.getvalue()).decode()
+
+    @staticmethod
+    def _composite_images(images: list[bytes]) -> bytes:
+        """
+        Stitch multiple images into a horizontal strip.
+        Keeps all images at the same height (min height of all) and preserves transparency.
+        """
+        pil_images = []
+        for raw in images:
+            with Image.open(io.BytesIO(raw)) as img:
+                pil_images.append(img.convert("RGBA").copy())
+
+        min_h = min(img.height for img in pil_images)
+        resized = []
+        for img in pil_images:
+            ratio = min_h / img.height
+            resized.append(img.resize((int(img.width * ratio), min_h), Image.LANCZOS))
+
+        total_w = sum(img.width for img in resized)
+
+        canvas = Image.new("RGBA", (total_w, min_h), (0, 0, 0, 0))
+        x = 0
+        for img in resized:
+            canvas.paste(img, (x, 0), img)
+            x += img.width
+
+        buf = io.BytesIO()
+        canvas.save(buf, format="PNG")
+        return buf.getvalue()
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -208,14 +241,27 @@ class GenAPIProvider:
         size: str,
         quality: str,
     ) -> bytes:
-        logger.debug(f"[genapi] edit model={model} images={len(images)} size={size} quality={quality}")
+        logger.debug(
+            f"[genapi] edit model={model} images={len(images)} size={size} quality={quality}"
+        )
+
+        # Если передано больше одного фото, склеиваем их в одну горизонтальную панораму,
+        # чтобы нейросеть Gen-API увидела все исходные лица/объекты на одном холсте
+        if len(images) == 1:
+            prepared_images = [self._to_b64(images[0])]
+        else:
+            logger.info(
+                f"[genapi] stitching {len(images)} images into a single canvas for the model"
+            )
+            stitched_png = self._composite_images(images)
+            prepared_images = [self._to_b64(stitched_png)]
 
         payload = {
             "prompt": prompt,
             "ratio": self._size_to_ratio(size),
             "quality": quality,
             "num_images": 1,
-            "images": [self._to_b64(img) for img in images],
+            "images": prepared_images,
         }
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
