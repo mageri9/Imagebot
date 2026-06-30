@@ -59,3 +59,75 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="gen:cancel"))
     return builder.as_markup()
+
+def admin_main_menu() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="👥 Пользователи", callback_data="admin:users"),
+        InlineKeyboardButton(text="⚙️ Настройки ИИ", callback_data="admin:settings"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="❌ Закрыть панель", callback_data="admin:close"),
+    )
+    return builder.as_markup()
+
+
+def admin_settings_menu(model: str, quality: str, provider: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text=f"🤖 Модель: {model}", callback_data="admin:select_model"),
+    )
+    builder.row(
+        InlineKeyboardButton(text=f"✨ Качество: {quality}", callback_data="admin:select_quality"),
+    )
+    builder.row(
+        InlineKeyboardButton(text=f"🔌 Провайдер: {provider}", callback_data="admin:select_provider"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:main"),
+    )
+    return builder.as_markup()
+
+
+def admin_model_choice() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="Flux-2", callback_data="admin:model:flux"),
+        InlineKeyboardButton(text="Midjourney", callback_data="admin:model:midjourney"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="SD 3", callback_data="admin:model:sd3"),
+        InlineKeyboardButton(text="GPT-Image", callback_data="admin:model:gpt-image"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:settings"),
+    )
+    return builder.as_markup()
+
+
+def admin_quality_choice() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="Low", callback_data="admin:quality:low"),
+        InlineKeyboardButton(text="Medium", callback_data="admin:quality:medium"),
+        InlineKeyboardButton(text="High", callback_data="admin:quality:high"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:settings"),
+    )
+    return builder.as_markup()
+
+
+def admin_provider_choice() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="Gen-API", callback_data="admin:provider:genapi"),
+        InlineKeyboardButton(text="AITunnel", callback_data="admin:provider:aitunnel"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="Автоматически (Баланс)", callback_data="admin:provider:auto"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:settings"),
+    )
+    return builder.as_markup()
