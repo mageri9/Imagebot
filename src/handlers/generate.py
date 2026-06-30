@@ -96,14 +96,12 @@ async def receive_image(message: Message, state: FSMContext, bot: Bot):
         await message.answer("Нужно отправить фото, не файл.")
         return
 
+    # Извлекаем file_id (это обычная строка, она безопасна для Redis JSON)
     file_id = message.photo[-1].file_id
-    file = await bot.get_file(file_id)
-    buf = await bot.download_file(file.file_path)
-    image_bytes = buf.read()
 
     data = await state.get_data()
-    images: list[bytes] = data.get("images", [])
-    images.append(image_bytes)
+    images: list[str] = data.get("images", [])  # Храним список строк вместо bytes
+    images.append(file_id)
 
     mode = data.get("mode", "image")
     max_multi = _max_multi()
@@ -150,17 +148,24 @@ async def cb_done_collecting(query: CallbackQuery, state: FSMContext):
 
 # ── Image prompt → generate ───────────────────────────────────────────────────
 
-async def receive_image_prompt(message: Message, state: FSMContext):
+async def receive_image_prompt(message: Message, state: FSMContext, bot: Bot):
     prompt = message.text.strip()
     data = await state.get_data()
-    images: list[bytes] = data.get("images", [])
+    image_ids: list[str] = data.get("images", [])
     await state.clear()
 
     wait_msg = await message.answer("⏳ Генерирую, подожди...")
     try:
+        # Скачиваем бинарные данные всех картинок из Telegram перед отправкой ИИ
+        images_bytes = []
+        for file_id in image_ids:
+            file = await bot.get_file(file_id)
+            buf = await bot.download_file(file.file_path)
+            images_bytes.append(buf.read())
+
         image_bytes = await generate_from_images(
             user_id=message.from_user.id,
-            images=images,
+            images=images_bytes,
             prompt=prompt,
         )
         await wait_msg.delete()
