@@ -103,22 +103,33 @@ class OpenAICompatProvider:
         size: str,
         quality: str,
     ) -> bytes:
-        logger.debug(f"[openai_compat] edit model={model} images={len(images)} size={size} quality={quality}")
+        logger.debug(
+            f"[openai_compat] edit model={model} images={len(images)} size={size} quality={quality}"
+        )
 
         if len(images) == 1:
             png = _to_png(images[0])
         else:
-            # Composite into single image — works with all providers
             png = self._composite_images(images)
 
         image_file = ("image.png", io.BytesIO(png), "image/png")
 
+        # Не передаем response_format, так как AITunnel не поддерживает его в edits
         response = await self._client.images.edit(
             model=model,
             image=image_file,
             prompt=prompt,
             size=size,
-            response_format="b64_json",
             n=1,
         )
-        return base64.b64decode(response.data[0].b64_json)
+
+        # Скачиваем полученный результат по прямой ссылке
+        url = response.data[0].url
+        logger.info(f"[openai_compat] resolved edit url: {url}")
+
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.content

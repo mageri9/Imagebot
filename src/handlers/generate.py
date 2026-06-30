@@ -59,11 +59,15 @@ async def cb_mode_multi(query: CallbackQuery, state: FSMContext):
     await state.update_data(images=[], mode="multi")
     await state.set_state(GenerateForm.waiting_image)
     max_multi = _max_multi()
-    await query.message.edit_text(
+    sent_msg = await query.message.edit_text(
         f"🖼🖼 Отправляй фото по одному (до {max_multi} штук).\n"
-        "Когда загрузишь все — нажми «Готово».",
+        f"Когда загрузишь все — нажми «Готово».\n\n"
+        f"⚠️ <b>ВАЖНО:</b> Отправляйте фото строго ПО ОДНОМУ (не альбомом)! "
+        f"Если отправить их альбомом, часть картинок может потеряться.",
         reply_markup=cancel_keyboard(),
     )
+    # Сохраняем ID сообщения, чтобы потом его удалить/обновить
+    await state.update_data(last_msg_id=sent_msg.message_id)
 
 
 # ── Text prompt → generate ────────────────────────────────────────────────────
@@ -96,12 +100,22 @@ async def receive_image(message: Message, state: FSMContext, bot: Bot):
         await message.answer("Нужно отправить фото, не файл.")
         return
 
-    # Извлекаем file_id (это обычная строка, она безопасна для Redis JSON)
-    file_id = message.photo[-1].file_id
-
+    # Сначала пытаемся удалить прошлое сообщение бота с кнопками
     data = await state.get_data()
-    images: list[str] = data.get("images", [])  # Храним список строк вместо bytes
-    images.append(file_id)
+    last_msg_id = data.get("last_msg_id")
+    if last_msg_id:
+        try:
+            await bot.delete_message(chat_id=message.chat.id, message_id=last_msg_id)
+        except Exception:
+            pass  # Игнорируем, если сообщение уже удалено
+
+    file_id = message.photo[-1].file_id
+    file = await bot.get_file(file_id)
+    buf = await bot.download_file(file.file_path)
+    image_bytes = buf.read()
+
+    images: list[bytes] = data.get("images", [])
+    images.append(image_bytes)
 
     mode = data.get("mode", "image")
     max_multi = _max_multi()
@@ -109,25 +123,29 @@ async def receive_image(message: Message, state: FSMContext, bot: Bot):
     if mode == "image":
         await state.update_data(images=images)
         await state.set_state(GenerateForm.waiting_image_prompt)
-        await message.answer(
+        sent_msg = await message.answer(
             "✅ Фото получено. Теперь напиши промпт — что сделать с изображением:",
             reply_markup=cancel_keyboard(),
         )
+        await state.update_data(last_msg_id=sent_msg.message_id)
     else:
         await state.update_data(images=images)
         count = len(images)
         if count >= max_multi:
             await state.set_state(GenerateForm.waiting_image_prompt)
-            await message.answer(
+            sent_msg = await message.answer(
                 f"✅ Загружено {count} фото (максимум). Напиши промпт:",
                 reply_markup=cancel_keyboard(),
             )
+            await state.update_data(last_msg_id=sent_msg.message_id)
         else:
             await state.set_state(GenerateForm.waiting_more_images)
-            await message.answer(
-                f"✅ Фото {count} загружено. Отправь ещё или нажми «Готово»:",
+            sent_msg = await message.answer(
+                f"✅ Фото {count} загружено. Отправь ещё или нажми «Готово»:\n\n"
+                f"⚠️ <i>Напоминание: отправляйте фото по одному, не альбомом!</i>",
                 reply_markup=multi_image_keyboard(count=count, max_multi=max_multi),
             )
+            await state.update_data(last_msg_id=sent_msg.message_id)
 
 
 async def receive_more_image(message: Message, state: FSMContext, bot: Bot):
