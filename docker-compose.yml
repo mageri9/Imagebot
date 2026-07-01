@@ -1,6 +1,7 @@
 services:
   bot:
-    build: .
+    image: ghcr.io/mageri9/m9_imagebot:latest
+    container_name: m9_imagebot
     restart: unless-stopped
     env_file: .env
     volumes:
@@ -10,10 +11,11 @@ services:
       redis:
         condition: service_healthy
     networks:
-      - bot_net
+      - m9_imagebot_net
 
   redis:
     image: redis:7-alpine
+    container_name: m9_imagebot_redis
     restart: unless-stopped
     command: >
       redis-server
@@ -21,18 +23,18 @@ services:
       --loglevel warning
       ${REDIS_PASSWORD:+--requirepass $REDIS_PASSWORD}
     volumes:
-      - redis_data:/data
+      - m9_imagebot_redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
     networks:
-      - bot_net
+      - m9_imagebot_net
 
 volumes:
-  redis_data:
+  m9_imagebot_redis_data:
 
 networks:
-  bot_net:
+  m9_imagebot_net:
     driver: bridge
