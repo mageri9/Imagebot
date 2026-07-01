@@ -24,10 +24,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Переводим имя репозитория в нижний регистр для совместимости с GHCR
-      - name: Downcase repository name
+      # Переводим в нижний регистр только имя владельца, имя переменной оставляем заглавным
+      - name: Downcase repository owner
         run: |
-          echo "GHCR_IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/m9_imagebot" | tr '[:upper:]' '[:lower:]' >> $GITHUB_ENV
+          OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "GHCR_IMAGE_NAME=ghcr.io/${OWNER_LOWER}/m9_imagebot" >> $GITHUB_ENV
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
