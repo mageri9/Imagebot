@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 -- Seed default settings (INSERT OR IGNORE = не перезапишет если уже есть)
-INSERT OR IGNORE INTO settings (key, value) VALUES ('image_model', 'gpt-image-1');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('image_model', 'gpt-image-2');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('image_size', '1024x1024');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('image_quality', 'medium');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('image_quality', 'low');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('provider_base_url', '');
