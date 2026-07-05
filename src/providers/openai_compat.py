@@ -5,6 +5,8 @@ from openai import AsyncOpenAI
 import httpx
 from loguru import logger
 
+from src.services.image_utils import composite_images
+
 
 def _to_png(image_bytes: bytes) -> bytes:
     """
@@ -36,36 +38,6 @@ class OpenAICompatProvider:
     async def close(self) -> None:
         await self._http_client.aclose()
 
-    # ── internal helpers ──────────────────────────────────────────────────────
-
-    @staticmethod
-    def _composite_images(images: list[bytes]) -> bytes:
-        """
-        Stitch multiple images into a horizontal strip.
-        Keeps all images at the same height (min height of all) and preserves transparency.
-        """
-        pil_images = []
-        for raw in images:
-            with Image.open(io.BytesIO(raw)) as img:
-                pil_images.append(img.convert("RGBA").copy())
-
-        min_h = min(img.height for img in pil_images)
-        resized = []
-        for img in pil_images:
-            ratio = min_h / img.height
-            resized.append(img.resize((int(img.width * ratio), min_h), Image.LANCZOS))
-
-        total_w = sum(img.width for img in resized)
-
-        canvas = Image.new("RGBA", (total_w, min_h), (0, 0, 0, 0))
-        x = 0
-        for img in resized:
-            canvas.paste(img, (x, 0), img)
-            x += img.width
-
-        buf = io.BytesIO()
-        canvas.save(buf, format="PNG")
-        return buf.getvalue()
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -126,7 +98,7 @@ class OpenAICompatProvider:
         if len(images) == 1:
             png = _to_png(images[0])
         else:
-            png = self._composite_images(images)
+            png = composite_images(images)
 
         image_file = ("image.png", io.BytesIO(png), "image/png")
 
