@@ -75,7 +75,7 @@ async def cb_admin_users(query: CallbackQuery):
         username = f"@{u['username']}" if u["username"] else "—"
         lines.append(
             f"• <code>{u['user_id']}</code> {name} ({username})\n"
-            f"  Лимит: {used}/{u['daily_limit']} today\n"
+            f"  Использовано: {used}/{u['daily_limit']} сегодня\n"
         )
 
     builder = InlineKeyboardBuilder()
