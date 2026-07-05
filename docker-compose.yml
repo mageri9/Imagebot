@@ -1,6 +1,6 @@
 services:
   bot:
-    image: ghcr.io/mageri9/m9_imagebot:latest
+    image: ${GHCR_IMAGE_NAME:-ghcr.io/mageri9/m9_imagebot}:latest
     container_name: m9_imagebot
     restart: unless-stopped
     env_file: .env

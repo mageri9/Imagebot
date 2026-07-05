@@ -49,6 +49,11 @@ jobs:
           key: ${{ secrets.SERVER_KEY }}
           script: |
             cd ~/apps/m9_imagebot
+            OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+            GHCR_IMAGE_NAME="ghcr.io/${OWNER_LOWER}/m9_imagebot"
+            grep -q '^GHCR_IMAGE_NAME=' .env \
+              && sed -i "s|^GHCR_IMAGE_NAME=.*|GHCR_IMAGE_NAME=${GHCR_IMAGE_NAME}|" .env \
+              || echo "GHCR_IMAGE_NAME=${GHCR_IMAGE_NAME}" >> .env
             docker compose pull
             docker compose up -d
             docker image prune -f
