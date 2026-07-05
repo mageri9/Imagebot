@@ -50,7 +50,7 @@ async def main():
 
     dp = Dispatcher(storage=storage)
 
-    dp.update.outer_middleware(ThrottleMiddleware(rate_limit=0.7))
+    dp.update.outer_middleware(ThrottleMiddleware(redis=redis, rate_limit=0.7))
     dp.update.outer_middleware(LoggerMiddleware())
     dp.update.outer_middleware(WhitelistMiddleware())
 
