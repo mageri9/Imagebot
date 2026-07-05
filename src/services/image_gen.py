@@ -371,15 +371,31 @@ def _is_retryable(exc: Exception) -> bool:
     if isinstance(exc, RETRYABLE_EXCEPTIONS):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code >= 500
+        status = exc.response.status_code
+        return status >= 500 or status == 429
     return False
 
 
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """Извлекает Retry-After из ответа 429, если провайдер его прислал."""
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    if exc.response.status_code != 429:
+        return None
+    retry_after = exc.response.headers.get("Retry-After")
+    if not retry_after:
+        return None
+    try:
+        return float(retry_after)
+    except ValueError:
+        return None
+
 async def _call_with_retries(coro_factory, prov_name: str):
     """
-    Вызывает coro_factory() с повторными попытками при временных сетевых ошибках
-    (таймауты, обрывы соединения, 5xx). Не ретраит ошибки авторизации, 4xx и т.д.
-    """
+     Вызывает coro_factory() с повторными попытками при временных сетевых ошибках
+    (таймауты, обрывы соединения, 5xx, 429). Не ретраит остальные 4xx (авторизация,
+    невалидный запрос и т.д.). Для 429 уважает заголовок Retry-After, если он есть.
+     """
     last_exc = None
     for attempt in range(MAX_RETRIES_PER_PROVIDER + 1):
         try:
@@ -388,7 +404,7 @@ async def _call_with_retries(coro_factory, prov_name: str):
             last_exc = e
             if not _is_retryable(e) or attempt == MAX_RETRIES_PER_PROVIDER:
                 raise
-            wait = RETRY_BACKOFF_BASE * (2 ** attempt)
+            wait = _retry_after_seconds(e) or RETRY_BACKOFF_BASE * (2 ** attempt)
             logger.warning(
                 f"[{prov_name}] transient error (attempt {attempt + 1}/{MAX_RETRIES_PER_PROVIDER + 1}): "
                 f"{e}. Retrying in {wait:.1f}s..."
