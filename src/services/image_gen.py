@@ -52,9 +52,15 @@ _rr_index = 0
 _lock = asyncio.Lock()
 
 
-async def _get_next_provider(require_edits: bool = False) -> dict:
-    """Выбирает провайдер с учетом принудительного выбора в БД, по кругу и поддержки функций."""
+async def _get_next_provider(require_edits: bool = False, tried: set[str] | None = None) -> dict | None:
+    """
+    Выбирает провайдер с учетом принудительного выбора в БД, по кругу и поддержки функций.
+    `tried` — имена провайдеров, уже опробованных в рамках текущего запроса на генерацию;
+    они исключаются, чтобы «fallback» не долбил один и тот же упавший провайдер повторно.
+    Возвращает None, если пробовать больше нечего.
+    """
     global _rr_index
+    tried = tried or set()
 
     # Ленивый импорт для предотвращения циклической зависимости
     from src.services.settings import get_setting
@@ -65,11 +71,16 @@ async def _get_next_provider(require_edits: bool = False) -> dict:
     # Фильтруем пул по поддержке генерации по изображениям, если это требуется
     available_pool = PROVIDER_POOL
     if require_edits:
-        available_pool = [p for p in PROVIDER_POOL if p.get("supports_edits", True)]
+        available_pool = [p for p in available_pool if p.get("supports_edits", True)]
         if not available_pool:
             raise NotImplementedError(
                 "Нет доступных провайдеров с поддержкой генерации по фото."
             )
+
+    # Исключаем уже опробованные в этом запросе провайдеры — это и есть настоящий fallback
+    candidates = [p for p in available_pool if p["name"] not in tried]
+    if not candidates:
+        return None
 
     async with _lock:
         # Если админ принудительно зафиксировал конкретного провайдера
@@ -77,13 +88,13 @@ async def _get_next_provider(require_edits: bool = False) -> dict:
             target_name = (
                 "aitunnel" if forced_provider == "openai_compat" else forced_provider
             )
-            # Проверяем, есть ли принудительный провайдер в нашем отфильтрованном пуле
-            for prov in available_pool:
+            # Используем принудительный провайдер, пока он ещё не был опробован в этом запросе
+            for prov in candidates:
                 if prov["name"] == target_name:
                     return prov
 
-        # Иначе используем стандартную балансировку Round Robin по доступному пулу
-        prov_config = available_pool[_rr_index % len(available_pool)]
+        # Round Robin по оставшимся неопробованным провайдерам
+        prov_config = candidates[_rr_index % len(candidates)]
         _rr_index += 1
         return prov_config
 
@@ -151,9 +162,15 @@ async def generate_from_text(user_id: int, prompt: str) -> bytes:
 
     last_error = None
 
+    tried_providers: set[str] = set()
+
     for attempt in range(len(PROVIDER_POOL)):
-        prov_config = await _get_next_provider(require_edits=False)
+        prov_config = await _get_next_provider(require_edits=False, tried=tried_providers)
+        if prov_config is None:
+            logger.info("[text gen] No untried providers left, stopping fallback loop")
+            break
         prov_name = prov_config["name"]
+        tried_providers.add(prov_name)
         provider = prov_config["provider"]
 
         target_model = _resolve_model(prov_name, requested_model)
@@ -245,9 +262,15 @@ async def generate_from_images(
                 "В пуле нет активных провайдеров с поддержкой генерации по фото."
             )
 
+        tried_providers: set[str] = set()
+
         for attempt in range(edit_pool_len):
-            prov_config = await _get_next_provider(require_edits=True)
+            prov_config = await _get_next_provider(require_edits=True, tried=tried_providers)
+            if prov_config is None:
+                logger.info("[image gen] No untried providers left, stopping fallback loop")
+                break
             prov_name = prov_config["name"]
+            tried_providers.add(prov_name)
             provider = prov_config["provider"]
 
             target_model = _resolve_model(prov_name, requested_model)
