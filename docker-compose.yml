@@ -7,16 +7,13 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+    # Бот теперь зависит только от внешних условий, depends_on удаляем или комментируем
     networks:
       - m9_imagebot_net
-      - nexus_shared
-
-
-volumes:
-  m9_imagebot_redis_data:
+      - nexus_shared # Подключаем бота к общей сети
 
 networks:
   m9_imagebot_net:
     driver: bridge
   nexus_shared:
-    external: true
+    external: true # Объявляем внешнюю сеть
