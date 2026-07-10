@@ -14,8 +14,8 @@ class ImageProvider(Protocol):
         prompt: str,
         model: str,
         size: str = "1024x1024",
-        quality: str = "medium",
-    ) -> bytes:
+        quality: str = "low",
+    ) -> tuple[bytes, dict]:
         """Text → image."""
         ...
 
@@ -25,7 +25,7 @@ class ImageProvider(Protocol):
         prompt: str,
         model: str,
         size: str = "1024x1024",
-        quality: str = "medium",
-    ) -> bytes:
+        quality: str = "low",
+    ) -> tuple[bytes, dict]:
         """Image(s) + prompt → image. Handles both single and multi-image edits."""
         ...

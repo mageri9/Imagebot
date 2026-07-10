@@ -221,7 +221,7 @@ class GenAPIProvider:
         model: str,
         size: str,
         quality: str,
-    ) -> bytes:
+    ) -> tuple[bytes, dict]:
         logger.debug(f"[genapi] generate model={model} size={size} quality={quality}")
 
         payload = {
@@ -234,7 +234,11 @@ class GenAPIProvider:
 
         request_id = await self._submit(self._client, model, payload)
         result = await self._poll(self._client, request_id)
-        return await self._download_result(self._client, result)
+        img_bytes = await self._download_result(self._client, result)
+
+        # Статический эквивалент для не-токеновых систем
+        usage_data = {"prompt_tokens": 1000, "completion_tokens": 0}
+        return img_bytes, usage_data
 
     async def edit(
         self,
@@ -243,13 +247,11 @@ class GenAPIProvider:
         model: str,
         size: str,
         quality: str,
-    ) -> bytes:
+    ) -> tuple[bytes, dict]:
         logger.debug(
             f"[genapi] edit model={model} images={len(images)} size={size} quality={quality}"
         )
 
-        # Gen-API не поддерживает JSON-массив файлов через multipart —
-        # склеиваем фото в панораму и шлём одним файлом через multipart
         if len(images) == 1:
             img_bytes = images[0]
         else:
@@ -270,4 +272,8 @@ class GenAPIProvider:
 
         request_id = await self._submit_multipart(self._client, model, data, files)
         result = await self._poll(self._client, request_id)
-        return await self._download_result(self._client, result)
+        img_bytes = await self._download_result(self._client, result)
+
+        # Статический эквивалент для не-токеновых систем при редактировании
+        usage_data = {"prompt_tokens": 1500, "completion_tokens": 0}
+        return img_bytes, usage_data

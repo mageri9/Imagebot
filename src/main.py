@@ -11,6 +11,7 @@ from loguru import logger
 from src.core.config import get_settings
 from src.core.db import init_db, close_db
 from src.core.router_manager import setup_routers
+from src.core.redis import get_redis, close_redis
 from src.middlewares.auth import WhitelistMiddleware
 from src.middlewares.logger import LoggerMiddleware
 from src.middlewares.throttle import ThrottleMiddleware
@@ -39,7 +40,7 @@ async def main():
 
 
     logger.info(f"Connecting to Redis at {settings.REDIS_HOST}:{settings.REDIS_PORT}...")
-    redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    redis = get_redis()
     await redis.ping()
     storage = RedisStorage(redis=redis)
 
@@ -70,7 +71,7 @@ async def main():
             if hasattr(prov, "close"):
                 await prov.close()
         await close_db()
-        await redis.aclose()
+        await close_redis()
         await bot.session.close()
         logger.info("Bot stopped.")
 

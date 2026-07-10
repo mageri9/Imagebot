@@ -47,7 +47,7 @@ class OpenAICompatProvider:
         model: str,
         size: str,
         quality: str,
-    ) -> bytes:
+    ) -> tuple[bytes, dict]:
         logger.debug(
             f"[openai_compat] generate model={model} size={size} quality={quality}"
         )
@@ -61,6 +61,7 @@ class OpenAICompatProvider:
         )
 
         img_item = response.data[0]
+        img_bytes = b""
 
         # 1. Если ИИ-сервер вернул Base64 (AITunnel по умолчанию)
         if getattr(img_item, "b64_json", None):
@@ -68,7 +69,6 @@ class OpenAICompatProvider:
             logger.info(
                 f"[openai_compat] resolved base64 image (bytes={len(img_bytes)})"
             )
-            return img_bytes
 
         # 2. Если ИИ-сервер вернул прямую ссылку (OpenAI / ProxyAPI)
         elif getattr(img_item, "url", None):
@@ -76,9 +76,29 @@ class OpenAICompatProvider:
             logger.info(f"[openai_compat] resolved generate url: {url}")
             resp = await self._http_client.get(url)
             resp.raise_for_status()
-            return resp.content
+            img_bytes = resp.content
         else:
             raise ValueError(f"No image data returned from provider: {img_item}")
+
+        # Безопасное извлечение токенов (с поддержкой model_extra)
+        usage_data = {"prompt_tokens": 0, "completion_tokens": 0}
+        usage = getattr(response, "usage", None)
+        if not usage and hasattr(response, "model_extra") and response.model_extra:
+            usage = response.model_extra.get("usage")
+
+        if usage:
+            if isinstance(usage, dict):
+                usage_data["prompt_tokens"] = int(usage.get("prompt_tokens", 0))
+                usage_data["completion_tokens"] = int(usage.get("completion_tokens", 0))
+            else:
+                usage_data["prompt_tokens"] = int(getattr(usage, "prompt_tokens", 0) or 0)
+                usage_data["completion_tokens"] = int(getattr(usage, "completion_tokens", 0) or 0)
+
+        # Смарт-фолбэк: если провайдер не вернул usage, оцениваем генерацию в 1000 токенов
+        if usage_data["prompt_tokens"] == 0:
+            usage_data["prompt_tokens"] = 1000
+
+        return img_bytes, usage_data
 
     async def edit(
         self,
@@ -87,12 +107,11 @@ class OpenAICompatProvider:
         model: str,
         size: str,
         quality: str,
-    ) -> bytes:
+    ) -> tuple[bytes, dict]:
         logger.debug(
             f"[openai_compat] edit model={model} images={len(images)} size={size} quality={quality}"
         )
 
-        # Диагностический лог отправки
         logger.info(f"[openai_compat] sending {len(images)} images to edits endpoint")
 
         if len(images) == 1:
@@ -112,6 +131,7 @@ class OpenAICompatProvider:
         )
 
         img_item = response.data[0]
+        img_bytes = b""
 
         # 1. Если ИИ-сервер вернул Base64
         if getattr(img_item, "b64_json", None):
@@ -119,15 +139,33 @@ class OpenAICompatProvider:
             logger.info(
                 f"[openai_compat] resolved base64 edit image (bytes={len(img_bytes)})"
             )
-            return img_bytes
 
         # 2. Если ИИ-сервер вернул прямую ссылку
-
         elif getattr(img_item, "url", None):
             url = img_item.url
             logger.info(f"[openai_compat] resolved edit url: {url}")
             resp = await self._http_client.get(url)
             resp.raise_for_status()
-            return resp.content
+            img_bytes = resp.content
         else:
             raise ValueError(f"No image data returned from provider: {img_item}")
+
+        # Безопасное извлечение токенов для редактирования изображений
+        usage_data = {"prompt_tokens": 0, "completion_tokens": 0}
+        usage = getattr(response, "usage", None)
+        if not usage and hasattr(response, "model_extra") and response.model_extra:
+            usage = response.model_extra.get("usage")
+
+        if usage:
+            if isinstance(usage, dict):
+                usage_data["prompt_tokens"] = int(usage.get("prompt_tokens", 0))
+                usage_data["completion_tokens"] = int(usage.get("completion_tokens", 0))
+            else:
+                usage_data["prompt_tokens"] = int(getattr(usage, "prompt_tokens", 0) or 0)
+                usage_data["completion_tokens"] = int(getattr(usage, "completion_tokens", 0) or 0)
+
+        # Смарт-фолбэк для Vision Edit: оцениваем редактирование в 1500 токенов
+        if usage_data["prompt_tokens"] == 0:
+            usage_data["prompt_tokens"] = 1500
+
+        return img_bytes, usage_data

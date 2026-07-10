@@ -1,8 +1,11 @@
 import asyncio
+import json
+
 from loguru import logger
 import httpx
 
 from src.core.config import get_settings
+from src.core.redis import get_redis
 from src.providers.gen_api import GenAPIProvider
 from src.providers.openai_compat import OpenAICompatProvider
 from src.services.settings import get_active_model, get_image_params
@@ -146,8 +149,37 @@ def _resolve_model(provider_name: str, requested_model: str) -> str:
 
 # ── 3. Логика генерации (с Circuit Breaker и Свойствами провайдеров) ──────────
 
-
-# Полное обновление функций генерации в src/services/image_gen.py
+async def _publish_telemetry(
+    project: str,
+    provider: str,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    modality: str,
+) -> None:
+    """Отправляет событие телеметрии в Redis Pub/Sub шину управляющего центра Nexus."""
+    try:
+        redis_client = get_redis()
+        event_data = {
+            "event_type": "ai.request",
+            "payload": {
+                "project": project,
+                "provider": provider,
+                "model": model,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "modality": modality,
+            },
+        }
+        await redis_client.publish(
+            "nexus:pubsub:telemetry", json.dumps(event_data, ensure_ascii=False)
+        )
+        logger.info(
+            f"[telemetry] Published to nexus:pubsub:telemetry | "
+            f"{project} ({provider}:{model}:{modality}) -> {prompt_tokens}p/{completion_tokens}c"
+        )
+    except Exception as e:
+        logger.error(f"[telemetry] Failed to publish telemetry event: {e}")
 
 
 async def generate_from_text(user_id: int, prompt: str) -> bytes:
@@ -161,11 +193,12 @@ async def generate_from_text(user_id: int, prompt: str) -> bytes:
     params = await get_image_params()
 
     last_error = None
-
     tried_providers: set[str] = set()
 
     for attempt in range(len(PROVIDER_POOL)):
-        prov_config = await _get_next_provider(require_edits=False, tried=tried_providers)
+        prov_config = await _get_next_provider(
+            require_edits=False, tried=tried_providers
+        )
         if prov_config is None:
             logger.info("[text gen] No untried providers left, stopping fallback loop")
             break
@@ -180,7 +213,8 @@ async def generate_from_text(user_id: int, prompt: str) -> bytes:
         )
 
         try:
-            result = await _call_with_retries(
+            # Распаковываем кортеж (результат, токены)
+            result, usage_data = await _call_with_retries(
                 lambda: provider.generate(
                     prompt=prompt,
                     model=target_model,
@@ -192,11 +226,20 @@ async def generate_from_text(user_id: int, prompt: str) -> bytes:
             await log_generation(
                 user_id, mode="text", model=target_model, prompt=prompt
             )
+
+            # Публикация телеметрии (модальность: text)
+            await _publish_telemetry(
+                project="imagebot",
+                provider=prov_name,
+                model=target_model,
+                prompt_tokens=usage_data.get("prompt_tokens", 0),
+                completion_tokens=usage_data.get("completion_tokens", 0),
+                modality="text",
+            )
+
             return result
 
         except (ValueError, KeyError, TypeError) as e:
-            # Ошибка локального разбора успешного ответа (деньги уже списались!)
-            # Мгновенно блокируем fallback, чтобы не платить повторно на другом сервисе
             logger.critical(
                 f"Parser error on SUCCESSFUL generation from '{prov_name}': {e}. Blocking fallback to prevent double-charging!"
             )
@@ -210,17 +253,12 @@ async def generate_from_text(user_id: int, prompt: str) -> bytes:
                 logger.info(
                     f"[{prov_name}] NSFW/moderation rejection for user_id={user_id}"
                 )
-
                 await release_quota(user_id)
-
                 raise NSFWContentError("Запрос отклонён фильтром модерации.") from e
-
-            # Обычные сетевые или авторизационные ошибки (деньги не списаны) — делаем fallback
 
             logger.warning(
                 f"Provider '{prov_name}' failed with model '{target_model}': {e}. Trying fallback..."
             )
-
             last_error = e
 
             await log_generation(
@@ -265,9 +303,13 @@ async def generate_from_images(
         tried_providers: set[str] = set()
 
         for attempt in range(edit_pool_len):
-            prov_config = await _get_next_provider(require_edits=True, tried=tried_providers)
+            prov_config = await _get_next_provider(
+                require_edits=True, tried=tried_providers
+            )
             if prov_config is None:
-                logger.info("[image gen] No untried providers left, stopping fallback loop")
+                logger.info(
+                    "[image gen] No untried providers left, stopping fallback loop"
+                )
                 break
             prov_name = prov_config["name"]
             tried_providers.add(prov_name)
@@ -280,7 +322,8 @@ async def generate_from_images(
             )
 
             try:
-                result = await _call_with_retries(
+                # Распаковываем кортеж (результат, токены)
+                result, usage_data = await _call_with_retries(
                     lambda: provider.edit(
                         images=images,
                         prompt=prompt,
@@ -293,10 +336,20 @@ async def generate_from_images(
                 await log_generation(
                     user_id, mode=mode, model=target_model, prompt=prompt
                 )
+
+                # Публикация телеметрии (модальность: vision)
+                await _publish_telemetry(
+                    project="imagebot",
+                    provider=prov_name,
+                    model=target_model,
+                    prompt_tokens=usage_data.get("prompt_tokens", 0),
+                    completion_tokens=usage_data.get("completion_tokens", 0),
+                    modality="vision",
+                )
+
                 return result
 
             except (ValueError, KeyError, TypeError) as e:
-                # Блокируем повторные списания при успешной генерации по фото
                 logger.critical(
                     f"Parser error on SUCCESSFUL image edit from '{prov_name}': {e}. Blocking fallback to prevent double-charging!"
                 )
@@ -310,15 +363,12 @@ async def generate_from_images(
                     logger.info(
                         f"[{prov_name}] NSFW/moderation rejection for user_id={user_id}"
                     )
-
                     await release_quota(user_id)
-
                     raise NSFWContentError("Запрос отклонён фильтром модерации.") from e
 
                 logger.warning(
                     f"Provider '{prov_name}' failed with model '{target_model}': {e}. Trying fallback..."
                 )
-
                 last_error = e
 
                 await log_generation(
@@ -340,6 +390,7 @@ async def generate_from_images(
     raise RuntimeError(
         f"Все доступные ИИ-серверы генерации по фото временно недоступны. Последняя ошибка: {last_error}"
     )
+
 
 RETRYABLE_EXCEPTIONS = (
     httpx.TimeoutException,
